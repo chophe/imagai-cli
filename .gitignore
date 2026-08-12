@@ -1,0 +1,5 @@
+/target
+/generated_images
+.env
+*.env
+.DS_Store

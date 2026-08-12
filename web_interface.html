@@ -1,0 +1,871 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Imagai - AI Image Generation Web Interface</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+            font-weight: 300;
+        }
+
+        .header p {
+            font-size: 1.1em;
+            opacity: 0.9;
+        }
+
+        .form-container {
+            padding: 40px;
+        }
+
+        .form-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 30px;
+            margin-bottom: 30px;
+        }
+
+        .form-group {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .form-group.full-width {
+            grid-column: 1 / -1;
+        }
+
+        label {
+            font-weight: 600;
+            margin-bottom: 8px;
+            color: #333;
+            font-size: 0.95em;
+        }
+
+        input, select, textarea {
+            padding: 12px 16px;
+            border: 2px solid #e1e5e9;
+            border-radius: 8px;
+            font-size: 1em;
+            transition: all 0.3s ease;
+            background: white;
+        }
+
+        input:focus, select:focus, textarea:focus {
+            outline: none;
+            border-color: #4facfe;
+            box-shadow: 0 0 0 3px rgba(79, 172, 254, 0.1);
+        }
+
+        textarea {
+            resize: vertical;
+            min-height: 100px;
+        }
+
+        .checkbox-group {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-top: 5px;
+        }
+
+        .checkbox-group input[type="checkbox"] {
+            width: auto;
+            margin: 0;
+        }
+
+        .section-title {
+            font-size: 1.3em;
+            font-weight: 600;
+            color: #333;
+            margin: 30px 0 20px 0;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #f0f0f0;
+            grid-column: 1 / -1;
+        }
+
+        .generate-btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 16px 40px;
+            font-size: 1.1em;
+            font-weight: 600;
+            border-radius: 50px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            width: 100%;
+            margin-top: 20px;
+        }
+
+        .generate-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(0,0,0,0.2);
+        }
+
+        .generate-btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .output-section {
+            margin-top: 40px;
+            padding: 30px;
+            background: #f8f9fa;
+            border-radius: 15px;
+        }
+
+        .output-title {
+            font-size: 1.2em;
+            font-weight: 600;
+            margin-bottom: 15px;
+            color: #333;
+        }
+
+        .output-content {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            border: 1px solid #e1e5e9;
+            min-height: 100px;
+            font-family: 'Courier New', monospace;
+            font-size: 0.9em;
+            white-space: pre-wrap;
+        }
+
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 20px;
+        }
+
+        .loading.show {
+            display: block;
+        }
+
+        .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #4facfe;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 15px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .image-preview {
+            margin-top: 20px;
+            text-align: center;
+        }
+
+        .image-preview img {
+            max-width: 100%;
+            max-height: 500px;
+            border-radius: 10px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+        }
+
+        .help-text {
+            font-size: 0.85em;
+            color: #666;
+            margin-top: 5px;
+            font-style: italic;
+        }
+        
+        /* Image Upload Styles */
+        .image-upload-container {
+            position: relative;
+        }
+        
+        .image-upload-input {
+            position: absolute;
+            opacity: 0;
+            width: 100%;
+            height: 100%;
+            cursor: pointer;
+            z-index: 2;
+        }
+        
+        .image-upload-area {
+            border: 2px dashed #ddd;
+            border-radius: 10px;
+            padding: 20px;
+            text-align: center;
+            background: #fafafa;
+            transition: all 0.3s ease;
+            position: relative;
+            min-height: 120px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .image-upload-area:hover {
+            border-color: #007bff;
+            background: #f0f8ff;
+        }
+        
+        .image-upload-area.dragover {
+            border-color: #007bff;
+            background: #e3f2fd;
+            transform: scale(1.02);
+        }
+        
+        .upload-placeholder {
+            color: #666;
+        }
+        
+        .upload-icon {
+            font-size: 2em;
+            display: block;
+            margin-bottom: 10px;
+        }
+        
+        .upload-placeholder p {
+            margin: 10px 0 5px 0;
+            font-weight: 500;
+        }
+        
+        .upload-placeholder small {
+            color: #999;
+        }
+        
+        .image-preview {
+            position: relative;
+            width: 100%;
+        }
+        
+        .image-preview img {
+            max-width: 100%;
+            max-height: 200px;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+        }
+        
+        .remove-image {
+            position: absolute;
+            top: -10px;
+            right: -10px;
+            background: #ff4757;
+            color: white;
+            border: none;
+            border-radius: 50%;
+            width: 30px;
+            height: 30px;
+            cursor: pointer;
+            font-size: 16px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+            transition: all 0.2s ease;
+        }
+        
+        .remove-image:hover {
+            background: #ff3742;
+            transform: scale(1.1);
+        }
+
+        @media (max-width: 768px) {
+            .form-grid {
+                grid-template-columns: 1fr;
+                gap: 20px;
+            }
+            
+            .container {
+                margin: 10px;
+            }
+            
+            .form-container {
+                padding: 20px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🎨 Imagai</h1>
+            <p>AI Image Generation Web Interface</p>
+        </div>
+        
+        <div class="form-container">
+            <form id="imageForm">
+                <div class="form-grid">
+                    <!-- Basic Parameters -->
+                    <div class="section-title">Basic Parameters</div>
+                    
+                    <div class="form-group full-width">
+                        <label for="prompt">Prompt *</label>
+                        <textarea id="prompt" name="prompt" placeholder="Enter your image generation prompt here..." required></textarea>
+                        <div class="help-text">Describe the image you want to generate</div>
+                    </div>
+                    
+                    <div class="form-group full-width">
+                        <label for="image_input">Input Image (Optional)</label>
+                        <div class="image-upload-container">
+                            <input type="file" id="image_input" name="image_input" accept="image/*" class="image-upload-input">
+                            <div class="image-upload-area" id="image_upload_area">
+                                <div class="upload-placeholder">
+                                    <span class="upload-icon">📷</span>
+                                    <p>Click to upload an image or drag & drop</p>
+                                    <small>Supports: JPG, PNG, GIF, WebP</small>
+                                </div>
+                                <div class="image-preview" id="image_preview" style="display: none;">
+                                    <img id="preview_img" src="" alt="Preview">
+                                    <button type="button" class="remove-image" id="remove_image">✕</button>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="help-text">Upload an image for image-to-image generation</div>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="engine">Engine</label>
+                        <select id="engine" name="engine">
+                            <option value="">Use Default Engine</option>
+                            <option value="openai_dalle3">OpenAI DALL-E 3</option>
+                            <option value="openai_gpt">OpenAI GPT Image</option>
+                            <option value="imagen4">Imagen 4.0</option>
+                            <option value="imagen4u">Imagen 4.0 Ultra</option>
+                            <option value="imagen3f">Imagen 3.0 Fast</option>
+                            <option value="imagen31">Imagen 3.0 Generate 001</option>
+                            <option value="imagen32">Imagen 3.0 Generate 001 (Alt)</option>
+                            <option value="stability_v11u">Stability Ultra v1.1</option>
+                            <option value="stability_v10u">Stability Ultra v1.0</option>
+                            <option value="stability_v11c">Stability Core v1.1</option>
+                            <option value="stability_v10c">Stability Core v1.0</option>
+                            <option value="gemini_v25free">Gemini 2.5 Flash (Free)</option>
+                        </select>
+                        <div class="help-text">Choose the AI model for image generation</div>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="output">Output Filename</label>
+                        <input type="text" id="output" name="output" placeholder="my_image.png">
+                        <div class="help-text">Leave empty for auto-generated filename</div>
+                    </div>
+                    
+                    <!-- Image Settings -->
+                    <div class="section-title">Image Settings</div>
+                    
+                    <div class="form-group">
+                        <label for="n">Number of Images</label>
+                        <input type="number" id="n" name="n" value="1" min="1" max="10">
+                        <div class="help-text">How many images to generate</div>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="size">Image Size</label>
+                        <select id="size" name="size">
+                            <option value="1024x1024" selected>1024x1024 (Square)</option>
+                            <option value="1792x1024">1792x1024 (Landscape)</option>
+                            <option value="1024x1792">1024x1792 (Portrait)</option>
+                            <option value="512x512">512x512 (Small Square)</option>
+                            <option value="768x768">768x768 (Medium Square)</option>
+                        </select>
+                        <div class="help-text">Image dimensions (provider-dependent)</div>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="quality">Quality (DALL-E 3)</label>
+                        <select id="quality" name="quality">
+                            <option value="standard" selected>Standard</option>
+                            <option value="hd">HD</option>
+                        </select>
+                        <div class="help-text">Image quality for DALL-E 3</div>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="style">Style (DALL-E 3)</label>
+                        <select id="style" name="style">
+                            <option value="vivid" selected>Vivid</option>
+                            <option value="natural">Natural</option>
+                        </select>
+                        <div class="help-text">Image style for DALL-E 3</div>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="response_format">Response Format</label>
+                        <select id="response_format" name="response_format">
+                            <option value="b64_json" selected>Base64 JSON</option>
+                            <option value="url">URL</option>
+                        </select>
+                        <div class="help-text">How to receive the generated image</div>
+                    </div>
+                    
+                    <!-- Stability AI Parameters -->
+                    <div class="section-title">Stability AI Parameters</div>
+                    
+                    <div class="form-group">
+                        <label for="negative_prompt">Negative Prompt</label>
+                        <textarea id="negative_prompt" name="negative_prompt" placeholder="What should be avoided in the image..."></textarea>
+                        <div class="help-text">Describe what you don't want in the image</div>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="seed">Seed</label>
+                        <input type="number" id="seed" name="seed" placeholder="Random seed for reproducibility">
+                        <div class="help-text">Integer for reproducible results</div>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="strength">Strength</label>
+                        <input type="number" id="strength" name="strength" step="0.1" min="0" max="1" placeholder="0.8">
+                        <div class="help-text">Strength for image-to-image editing (0.0-1.0)</div>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="output_format">Output Format</label>
+                        <select id="output_format" name="output_format">
+                            <option value="">Default</option>
+                            <option value="png">PNG</option>
+                            <option value="jpg">JPG</option>
+                            <option value="webp">WebP</option>
+                        </select>
+                        <div class="help-text">Output image format for Stability AI</div>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="aspect_ratio">Aspect Ratio</label>
+                        <select id="aspect_ratio" name="aspect_ratio">
+                            <option value="">Use Size Setting</option>
+                            <option value="1:1">1:1 (Square)</option>
+                            <option value="16:9">16:9 (Widescreen)</option>
+                            <option value="9:16">9:16 (Portrait)</option>
+                            <option value="4:3">4:3 (Standard)</option>
+                            <option value="3:4">3:4 (Portrait Standard)</option>
+                        </select>
+                        <div class="help-text">Overrides size if set (Stability AI)</div>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="mode">Generation Mode</label>
+                        <select id="mode" name="mode">
+                            <option value="">Default</option>
+                            <option value="text-to-image">Text to Image</option>
+                            <option value="image-to-image">Image to Image</option>
+                        </select>
+                        <div class="help-text">Generation mode for Stability AI</div>
+                    </div>
+                    
+                    <!-- Options -->
+                    <div class="section-title">Options</div>
+                    
+                    <div class="form-group">
+                        <div class="checkbox-group">
+                            <input type="checkbox" id="auto_filename" name="auto_filename">
+                            <label for="auto_filename">Auto-generate filename using LLM</label>
+                        </div>
+                        <div class="help-text">Generate filename automatically from prompt</div>
+                    </div>
+                    
+                    <div class="form-group">
+                        <div class="checkbox-group">
+                            <input type="checkbox" id="random_filename" name="random_filename">
+                            <label for="random_filename">Generate random filename</label>
+                        </div>
+                        <div class="help-text">Use a random filename instead</div>
+                    </div>
+                    
+                    <div class="form-group">
+                        <div class="checkbox-group">
+                            <input type="checkbox" id="verbose" name="verbose">
+                            <label for="verbose">Verbose output</label>
+                        </div>
+                        <div class="help-text">Print detailed request information</div>
+                    </div>
+                </div>
+                
+                <button type="submit" class="generate-btn" id="generateBtn">
+                    🎨 Generate Image
+                </button>
+            </form>
+            
+            <div class="output-section">
+                <div class="output-title">Output</div>
+                <div class="loading" id="loading">
+                    <div class="spinner"></div>
+                    <p>Generating your image...</p>
+                </div>
+                <div class="output-content" id="output-content">Ready to generate images...</div>
+                <div class="image-preview" id="image-preview"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Settings persistence
+        const STORAGE_KEY = 'imagai_settings';
+        
+        // Load saved settings
+        function loadSettings() {
+            const saved = localStorage.getItem(STORAGE_KEY);
+            if (saved) {
+                const settings = JSON.parse(saved);
+                Object.keys(settings).forEach(key => {
+                    const element = document.getElementById(key);
+                    if (element) {
+                        if (element.type === 'checkbox') {
+                            element.checked = settings[key];
+                        } else {
+                            element.value = settings[key];
+                        }
+                    }
+                });
+            }
+        }
+        
+        // Save settings
+        function saveSettings() {
+            const form = document.getElementById('imageForm');
+            const formData = new FormData(form);
+            const settings = {};
+            
+            // Get all form elements
+            const elements = form.querySelectorAll('input, select, textarea');
+            elements.forEach(element => {
+                if (element.type === 'checkbox') {
+                    settings[element.id] = element.checked;
+                } else if (element.value) {
+                    settings[element.id] = element.value;
+                }
+            });
+            
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
+        }
+        
+        // Build CLI command
+        function buildCliCommand(formData) {
+            let command = 'rye run imagai generate';
+            
+            // Add prompt
+            const prompt = formData.get('prompt');
+            if (prompt) {
+                command += ` --prompt "${prompt.replace(/"/g, '\\"')}"`;
+            }
+            
+            // Add other parameters
+            const params = {
+                'engine': '--engine',
+                'output': '--output',
+                'n': '--num-images',
+                'size': '--size',
+                'quality': '--quality',
+                'style': '--style',
+                'response_format': '--response-format',
+                'negative_prompt': '--negative-prompt',
+                'seed': '--seed',
+                'strength': '--strength',
+                'output_format': '--output-format',
+                'aspect_ratio': '--aspect-ratio',
+                'mode': '--mode'
+            };
+            
+            Object.keys(params).forEach(key => {
+                const value = formData.get(key);
+                if (value && value.trim()) {
+                    if (key === 'negative_prompt') {
+                        command += ` ${params[key]} "${value.replace(/"/g, '\\"')}"`;
+                    } else {
+                        command += ` ${params[key]} ${value}`;
+                    }
+                }
+            });
+            
+            // Add flags
+            const flags = ['auto_filename', 'random_filename', 'verbose'];
+            flags.forEach(flag => {
+                if (formData.get(flag)) {
+                    command += ` --${flag.replace('_', '-')}`;
+                }
+            });
+            
+            return command;
+        }
+        
+        // Execute image generation via API
+        async function executeGeneration(formData) {
+            const outputElement = document.getElementById('output-content');
+            const imagePreview = document.getElementById('image-preview');
+            
+            // Prepare request data
+            const requestData = {};
+            
+            // Get all form values
+             const elements = document.querySelectorAll('#imageForm input, #imageForm select, #imageForm textarea');
+             elements.forEach(element => {
+                 if (element.type === 'file') {
+                     // Skip file inputs, we handle image data separately
+                     return;
+                 } else if (element.type === 'checkbox') {
+                     if (element.checked) {
+                         requestData[element.name] = true;
+                     }
+                 } else if (element.value && element.value.trim()) {
+                     requestData[element.name] = element.value.trim();
+                 }
+             });
+             
+             // Add uploaded image data if available
+             if (uploadedImageData) {
+                 requestData.input_image = uploadedImageData;
+             }
+            
+            outputElement.textContent = `🚀 Starting image generation...\n📝 Prompt: ${requestData.prompt}\n🤖 Engine: ${requestData.engine || 'default'}\n`;
+            
+            try {
+                const response = await fetch('/api/generate', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(requestData)
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    outputElement.textContent += `\n✅ Generation completed successfully!\n`;
+                    
+                    // Display results
+                    result.results.forEach((res, index) => {
+                        if (res.success) {
+                            outputElement.textContent += `\n📸 Image ${res.index}: Generated successfully`;
+                            if (res.saved_path) {
+                                outputElement.textContent += `\n📁 Saved to: ${res.saved_path}`;
+                            }
+                            
+                            // Display image preview
+                            if (res.image_data) {
+                                const imgElement = document.createElement('img');
+                                imgElement.src = res.image_data;
+                                imgElement.style.maxWidth = '100%';
+                                imgElement.style.maxHeight = '500px';
+                                imgElement.style.borderRadius = '10px';
+                                imgElement.style.boxShadow = '0 10px 30px rgba(0,0,0,0.2)';
+                                imgElement.style.marginTop = '10px';
+                                
+                                const imgContainer = document.createElement('div');
+                                imgContainer.style.textAlign = 'center';
+                                imgContainer.style.marginTop = '20px';
+                                imgContainer.appendChild(imgElement);
+                                
+                                if (index === 0) {
+                                    imagePreview.innerHTML = '';
+                                }
+                                imagePreview.appendChild(imgContainer);
+                            }
+                        } else {
+                            outputElement.textContent += `\n❌ Image ${res.index}: ${res.error}`;
+                        }
+                    });
+                } else {
+                    outputElement.textContent += `\n❌ Generation failed: ${result.error}`;
+                }
+                
+            } catch (error) {
+                outputElement.textContent += `\n💥 Network error: ${error.message}`;
+                console.error('Generation error:', error);
+            }
+        }
+        
+        // Form submission handler
+        document.getElementById('imageForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            
+            const formData = new FormData(this);
+            const generateBtn = document.getElementById('generateBtn');
+            const loading = document.getElementById('loading');
+            const outputContent = document.getElementById('output-content');
+            const imagePreview = document.getElementById('image-preview');
+            
+            // Save settings
+            saveSettings();
+            
+            // Show loading state
+            generateBtn.disabled = true;
+            loading.classList.add('show');
+            outputContent.textContent = '';
+            imagePreview.innerHTML = '';
+            
+            try {
+                await executeGeneration(formData);
+            } catch (error) {
+                outputContent.textContent = `Error: ${error.message}`;
+            } finally {
+                generateBtn.disabled = false;
+                loading.classList.remove('show');
+            }
+        });
+        
+        // Auto-save settings on input change
+        document.addEventListener('input', function(e) {
+            if (e.target.closest('#imageForm')) {
+                setTimeout(saveSettings, 100); // Debounce
+            }
+        });
+        
+        // Load available engines from API
+        async function loadEngines() {
+            try {
+                const response = await fetch('/api/engines');
+                const result = await response.json();
+                
+                if (result.success) {
+                    const engineSelect = document.getElementById('engine');
+                    // Clear existing options except the first one
+                    while (engineSelect.children.length > 1) {
+                        engineSelect.removeChild(engineSelect.lastChild);
+                    }
+                    
+                    // Add engines from API
+                    result.engines.forEach(engine => {
+                        const option = document.createElement('option');
+                        option.value = engine.name;
+                        option.textContent = `${engine.name} (${engine.model})`;
+                        engineSelect.appendChild(option);
+                    });
+                    
+                    // Set default engine if available
+                    if (result.default_engine) {
+                        engineSelect.value = result.default_engine;
+                    }
+                }
+            } catch (error) {
+                console.error('Failed to load engines:', error);
+            }
+        }
+        
+        // Image upload functionality
+        let uploadedImageData = null;
+        
+        function initializeImageUpload() {
+            const imageInput = document.getElementById('image_input');
+            const uploadArea = document.getElementById('image_upload_area');
+            const imagePreview = document.getElementById('image_preview');
+            const previewImg = document.getElementById('preview_img');
+            const removeBtn = document.getElementById('remove_image');
+            const uploadPlaceholder = uploadArea.querySelector('.upload-placeholder');
+            
+            // File input change handler
+            imageInput.addEventListener('change', handleImageSelect);
+            
+            // Drag and drop handlers
+            uploadArea.addEventListener('dragover', handleDragOver);
+            uploadArea.addEventListener('dragleave', handleDragLeave);
+            uploadArea.addEventListener('drop', handleDrop);
+            
+            // Remove image handler
+            removeBtn.addEventListener('click', removeImage);
+            
+            function handleImageSelect(e) {
+                const file = e.target.files[0];
+                if (file) {
+                    processImageFile(file);
+                }
+            }
+            
+            function handleDragOver(e) {
+                e.preventDefault();
+                uploadArea.classList.add('dragover');
+            }
+            
+            function handleDragLeave(e) {
+                e.preventDefault();
+                uploadArea.classList.remove('dragover');
+            }
+            
+            function handleDrop(e) {
+                e.preventDefault();
+                uploadArea.classList.remove('dragover');
+                
+                const files = e.dataTransfer.files;
+                if (files.length > 0) {
+                    const file = files[0];
+                    if (file.type.startsWith('image/')) {
+                        imageInput.files = files;
+                        processImageFile(file);
+                    } else {
+                        alert('Please upload an image file.');
+                    }
+                }
+            }
+            
+            function processImageFile(file) {
+                // Validate file size (max 10MB)
+                if (file.size > 10 * 1024 * 1024) {
+                    alert('Image file is too large. Please choose a file smaller than 10MB.');
+                    return;
+                }
+                
+                // Validate file type
+                if (!file.type.startsWith('image/')) {
+                    alert('Please select a valid image file.');
+                    return;
+                }
+                
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    uploadedImageData = e.target.result;
+                    previewImg.src = uploadedImageData;
+                    uploadPlaceholder.style.display = 'none';
+                    imagePreview.style.display = 'block';
+                };
+                reader.readAsDataURL(file);
+            }
+            
+            function removeImage() {
+                uploadedImageData = null;
+                imageInput.value = '';
+                previewImg.src = '';
+                imagePreview.style.display = 'none';
+                uploadPlaceholder.style.display = 'block';
+            }
+        }
+        
+        // Load settings and engines on page load
+        document.addEventListener('DOMContentLoaded', function() {
+            loadSettings();
+            loadEngines();
+            initializeImageUpload();
+        });
+    </script>
+</body>
+</html>
