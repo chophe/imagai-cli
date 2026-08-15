@@ -152,47 +152,7 @@ pub async fn generate_images(
         }
     };
     let url = resolve_url(&config.base_url, "images/generations");
-
-    let mut body = json!({
-        "model": model,
-        "prompt": request.prompt,
-        "n": request.n.max(1),
-        "size": request.size,
-        "response_format": request.response_format,
-    });
-
-    if model.contains("dall-e-3") {
-        body["quality"] = json!(request.quality);
-        body["style"] = json!(request.style);
-    }
-
-    if model.to_lowercase().contains("stability") {
-        if let Some(obj) = body.as_object_mut() {
-            obj.remove("n");
-            obj.remove("response_format");
-        }
-        let stability_keys = [
-            "negative_prompt",
-            "seed",
-            "strength",
-            "output_format",
-            "aspect_ratio",
-            "mode",
-        ];
-        for key in stability_keys {
-            if let Some(v) = request.extra_params.get(key) {
-                body[key] = v.clone();
-            }
-        }
-        if body.get("mode").is_none() && !model.to_lowercase().contains("sd3") {
-            body["mode"] = json!("text-to-image");
-        }
-        if body.get("aspect_ratio").is_some() {
-            if let Some(obj) = body.as_object_mut() {
-                obj.remove("size");
-            }
-        }
-    }
+    let body = build_images_body(request, config, &model);
 
     if request.verbose {
         eprintln!("--- API Request Body ---");
@@ -271,6 +231,63 @@ pub async fn generate_images(
         });
     }
     responses
+}
+
+/// Build the request body for the OpenAI-compatible images API.
+///
+/// Special cases:
+/// - DALL-E 3 models get `quality` and `style`.
+/// - Stability-style models drop `n`/`response_format` and accept
+///   Stability-specific extra params; `size` is dropped when `aspect_ratio`
+///   is present, and a default `mode` is injected for non-sd3 models.
+pub fn build_images_body(
+    request: &ImageGenerationRequest,
+    config: &EngineConfig,
+    model: &str,
+) -> serde_json::Value {
+    let mut body = json!({
+        "model": model,
+        "prompt": request.prompt,
+        "n": request.n.max(1),
+        "size": request.size,
+        "response_format": request.response_format,
+    });
+
+    if model.contains("dall-e-3") {
+        body["quality"] = json!(request.quality);
+        body["style"] = json!(request.style);
+    }
+
+    if model.to_lowercase().contains("stability") {
+        if let Some(obj) = body.as_object_mut() {
+            obj.remove("n");
+            obj.remove("response_format");
+        }
+        const STABILITY_KEYS: [&str; 6] = [
+            "negative_prompt",
+            "seed",
+            "strength",
+            "output_format",
+            "aspect_ratio",
+            "mode",
+        ];
+        for key in STABILITY_KEYS {
+            if let Some(v) = request.extra_params.get(key) {
+                body[key] = v.clone();
+            }
+        }
+        if body.get("mode").is_none() && !model.to_lowercase().contains("sd3") {
+            body["mode"] = json!("text-to-image");
+        }
+        if body.get("aspect_ratio").is_some() {
+            if let Some(obj) = body.as_object_mut() {
+                obj.remove("size");
+            }
+        }
+    }
+
+    let _ = config;
+    body
 }
 
 async fn openrouter_chat_generate(
@@ -430,5 +447,119 @@ fn truncate(s: &str, max: usize) -> String {
         s.to_string()
     } else {
         format!("{}…", &s[..max])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn request_with_extra(extra: HashMap<String, Value>) -> ImageGenerationRequest {
+        ImageGenerationRequest {
+            prompt: "a cat".to_string(),
+            engine: "mock".to_string(),
+            size: "1024x1024".to_string(),
+            quality: "standard".to_string(),
+            n: 2,
+            style: "vivid".to_string(),
+            response_format: "b64_json".to_string(),
+            extra_params: extra,
+            verbose: false,
+            auto_filename: false,
+            random_filename: false,
+            output_filename: None,
+        }
+    }
+
+    fn dalle_config() -> EngineConfig {
+        EngineConfig {
+            api_key: "sk".to_string(),
+            base_url: Some("http://mock/v1".to_string()),
+            model: Some("dall-e-3".to_string()),
+        }
+    }
+
+    #[test]
+    fn dalle3_body_has_quality_and_style() {
+        let req = request_with_extra(HashMap::new());
+        let body = build_images_body(&req, &dalle_config(), "dall-e-3");
+        assert_eq!(body["model"], "dall-e-3");
+        assert_eq!(body["prompt"], "a cat");
+        assert_eq!(body["n"], 2);
+        assert_eq!(body["size"], "1024x1024");
+        assert_eq!(body["response_format"], "b64_json");
+        assert_eq!(body["quality"], "standard");
+        assert_eq!(body["style"], "vivid");
+    }
+
+    #[test]
+    fn gpt_image_body_has_no_quality_style() {
+        let cfg = EngineConfig {
+            model: Some("gpt-image-1".to_string()),
+            ..dalle_config()
+        };
+        let body = build_images_body(&request_with_extra(HashMap::new()), &cfg, "gpt-image-1");
+        assert_eq!(body["model"], "gpt-image-1");
+        assert!(body.get("quality").is_none());
+        assert!(body.get("style").is_none());
+    }
+
+    #[test]
+    fn stability_body_merges_extra_params() {
+        let mut extra = HashMap::new();
+        extra.insert("negative_prompt".into(), json!("blurry, text"));
+        extra.insert("seed".into(), json!(42));
+        extra.insert("aspect_ratio".into(), json!("16:9"));
+        let cfg = EngineConfig {
+            model: Some("stability.stable-image-core-v1:1".to_string()),
+            ..dalle_config()
+        };
+        let body = build_images_body(
+            &request_with_extra(extra),
+            &cfg,
+            "stability.stable-image-core-v1:1",
+        );
+
+        // n / response_format dropped for stability.
+        assert!(body.get("n").is_none());
+        assert!(body.get("response_format").is_none());
+        // size dropped because aspect_ratio present.
+        assert!(body.get("size").is_none());
+
+        assert_eq!(body["negative_prompt"], "blurry, text");
+        assert_eq!(body["seed"], 42);
+        assert_eq!(body["aspect_ratio"], "16:9");
+        // default mode injected for non-sd3 models.
+        assert_eq!(body["mode"], "text-to-image");
+    }
+
+    #[test]
+    fn stability_sd3_gets_no_default_mode() {
+        let cfg = EngineConfig {
+            model: Some("stability.sd3-large".to_string()),
+            ..dalle_config()
+        };
+        let body = build_images_body(
+            &request_with_extra(HashMap::new()),
+            &cfg,
+            "stability.sd3-large",
+        );
+        assert!(body.get("mode").is_none());
+        assert!(body.get("n").is_none());
+        // No size drop unless aspect_ratio given.
+        assert_eq!(body["size"], "1024x1024");
+    }
+
+    #[test]
+    fn resolve_url_defaults_to_openai() {
+        assert_eq!(
+            resolve_url(&None, "images/generations"),
+            "https://api.openai.com/v1/images/generations"
+        );
+        assert_eq!(
+            resolve_url(&Some("http://x/v1/".to_string()), "models"),
+            "http://x/v1/models"
+        );
     }
 }

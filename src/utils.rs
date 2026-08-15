@@ -271,3 +271,147 @@ fn png_text_chunk(keyword: &str, text: &str) -> Vec<u8> {
     chunk.extend_from_slice(&crc.to_be_bytes());
     chunk
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use base64::Engine;
+
+    const PIXEL_PNG_B64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+
+    fn pixel_png() -> Vec<u8> {
+        base64::engine::general_purpose::STANDARD
+            .decode(PIXEL_PNG_B64)
+            .unwrap()
+    }
+
+    #[test]
+    fn sanitize_replaces_special_chars_and_collapses_whitespace() {
+        assert_eq!(sanitize_filename("a b  c"), "a_b_c");
+        assert_eq!(
+            sanitize_filename("a<b>c:d\"e/f\\g|h?i*j"),
+            "a_b_c_d_e_f_g_h_i_j"
+        );
+        assert_eq!(
+            sanitize_filename(" tab\tand\nnewline "),
+            "_tab_and_newline_"
+        );
+        assert_eq!(sanitize_filename("ok-name_1"), "ok-name_1");
+        assert_eq!(sanitize_filename(&"x".repeat(150)).len(), 100);
+    }
+
+    #[test]
+    fn generate_filename_from_prompt() {
+        let name = generate_filename(Some("A beautiful Sunset!"), "png");
+        assert!(name.starts_with("A_beautiful_Sunset__"));
+        assert!(name.ends_with(".png"));
+        assert!(name.contains(&chrono::Local::now().format("%Y%m%d_%H%M%S").to_string()));
+
+        let no_prompt = generate_filename(None, "png");
+        assert!(no_prompt.starts_with("image_"));
+        assert!(no_prompt.ends_with(".png"));
+    }
+
+    #[test]
+    fn random_filename_shape() {
+        let a = generate_random_filename("png");
+        let b = generate_random_filename("png");
+        assert_ne!(a, b);
+        assert!(a.starts_with("image_"));
+        assert!(a.ends_with(".png"));
+        // image_<YYYYMMDD>_<HHMMSS>_<uuid8>.png
+        let stem = a.trim_end_matches(".png");
+        let parts: Vec<&str> = stem.split('_').collect();
+        assert_eq!(parts.len(), 4, "parts: {parts:?}");
+        assert_eq!(parts[0], "image");
+        assert_eq!(parts[1].len(), 8, "date part");
+        assert_eq!(parts[2].len(), 6, "time part");
+        assert_eq!(parts[3].len(), 8, "uuid part");
+        assert!(parts[3].chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn image_extension_detection() {
+        assert_eq!(get_image_extension(Path::new("x.PNG")), "png");
+        assert_eq!(get_image_extension(Path::new("x.jpeg")), "jpeg");
+        assert_eq!(get_image_extension(Path::new("x.webp")), "webp");
+        assert_eq!(get_image_extension(Path::new("x.gif")), "gif");
+        assert_eq!(get_image_extension(Path::new("x.txt")), "png");
+        assert_eq!(get_image_extension(Path::new("noext")), "png");
+    }
+
+    /// Walk PNG chunks and collect (type, data, crc-ok).
+    fn parse_png_chunks(bytes: &[u8]) -> Vec<(String, Vec<u8>, bool)> {
+        let mut out = Vec::new();
+        assert!(
+            bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
+            "valid PNG signature"
+        );
+        let mut pos = 8usize;
+        while pos + 8 <= bytes.len() {
+            let len = u32::from_be_bytes(bytes[pos..pos + 4].try_into().unwrap()) as usize;
+            let ctype = String::from_utf8(bytes[pos + 4..pos + 8].to_vec()).unwrap();
+            let data = bytes[pos + 8..pos + 8 + len].to_vec();
+            let stored_crc =
+                u32::from_be_bytes(bytes[pos + 8 + len..pos + 12 + len].try_into().unwrap());
+            let mut crc_input = bytes[pos + 4..pos + 8].to_vec();
+            crc_input.extend_from_slice(&data);
+            let crc_ok = crc32fast::hash(&crc_input) == stored_crc;
+            out.push((ctype, data, crc_ok));
+            pos += 12 + len;
+        }
+        out
+    }
+
+    #[test]
+    fn inject_png_metadata_adds_text_chunks() {
+        let png = pixel_png();
+        let out = inject_png_metadata(&png, "my prompt here", "dall-e-3");
+        assert!(out.len() > png.len());
+
+        let chunks = parse_png_chunks(&out);
+        let texts: Vec<&(String, Vec<u8>, bool)> =
+            chunks.iter().filter(|(t, _, _)| t == "tEXt").collect();
+        assert_eq!(texts.len(), 2, "Prompt + Model tEXt chunks");
+
+        // Prompt chunk.
+        let prompt_chunk = &texts[0].1;
+        let idx = prompt_chunk.iter().position(|&b| b == 0).unwrap();
+        assert_eq!(&prompt_chunk[..idx], b"Prompt");
+        assert_eq!(&prompt_chunk[idx + 1..], b"my prompt here");
+
+        // Model chunk.
+        let model_chunk = &texts[1].1;
+        let idx = model_chunk.iter().position(|&b| b == 0).unwrap();
+        assert_eq!(&model_chunk[..idx], b"Model");
+        assert_eq!(&model_chunk[idx + 1..], b"dall-e-3");
+
+        // All chunk CRCs valid.
+        assert!(chunks.iter().all(|(_, _, ok)| *ok));
+
+        // IEND still last.
+        assert_eq!(chunks.last().unwrap().0, "IEND");
+    }
+
+    #[test]
+    fn inject_png_metadata_leaves_non_png_untouched() {
+        let junk = b"not a png at all".to_vec();
+        assert_eq!(inject_png_metadata(&junk, "p", "m"), junk);
+    }
+
+    #[test]
+    fn png_text_chunk_is_well_formed() {
+        let chunk = png_text_chunk("Keyword", "value");
+        // keyword "Keyword" (7) + null + "value" (5) = 13 bytes of data.
+        assert_eq!(u32::from_be_bytes(chunk[..4].try_into().unwrap()), 13);
+        assert_eq!(&chunk[4..8], b"tEXt");
+        assert_eq!(&chunk[8..21], b"Keyword\x00value");
+
+        let stored_crc = u32::from_be_bytes(chunk[21..].try_into().unwrap());
+        assert_eq!(
+            crc32fast::hash(&chunk[4..21]),
+            stored_crc,
+            "CRC covers type+data"
+        );
+    }
+}

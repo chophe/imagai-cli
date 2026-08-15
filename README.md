@@ -105,6 +105,22 @@ Start with `imagai web`, then:
 | `/api/images` | GET | List generated images |
 | `/api/images/<file>` | GET | Serve a generated image |
 
+## Testing
+
+The suite includes unit tests plus end-to-end tests that run the real binary
+against an in-process mock OpenAI-compatible server.
+
+```bash
+cargo test            # all tests
+cargo test --lib      # unit tests only
+cargo test --test cli # end-to-end binary tests (generate, list-engines, errors)
+cargo test --test web # REST API tests (in-process)
+cargo test --test core # generation pipeline tests
+```
+
+The CLI tests spawn the compiled `imagai` binary as a subprocess, so the
+binary is always rebuilt automatically by `cargo test`.
+
 ## Notes
 
 - This is a from-scratch Rust port; behavior mirrors the original Python CLI

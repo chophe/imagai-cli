@@ -124,3 +124,74 @@ fn dir_of_repo_root() -> Option<PathBuf> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    /// Tests that mutate process-wide env vars must be serialized.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn clear_imagai_env() {
+        let to_remove: Vec<String> = std::env::vars()
+            .filter(|(k, _)| k.starts_with("IMAGAI__"))
+            .map(|(k, _)| k)
+            .collect();
+        for k in to_remove {
+            std::env::remove_var(k);
+        }
+    }
+
+    #[test]
+    fn loads_engines_defaults_and_output_dir() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        clear_imagai_env();
+
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("IMAGAI__DEFAULT_ENGINE", "openai_dalle3");
+        std::env::set_var("IMAGAI__OUTPUT_DIR", tmp.path());
+        std::env::set_var("IMAGAI__ENGINES__OPENAI_DALLE3__API_KEY", "sk-test");
+        std::env::set_var("IMAGAI__ENGINES__OPENAI_DALLE3__MODEL", "dall-e-3");
+        std::env::set_var(
+            "IMAGAI__ENGINES__OPENAI_DALLE3__BASE_URL",
+            "https://api.example.com/v1",
+        );
+
+        let settings = Settings::load();
+
+        assert_eq!(settings.default_engine.as_deref(), Some("openai_dalle3"));
+        assert_eq!(settings.output_dir, tmp.path());
+
+        // Case-insensitive lookup.
+        let cfg = settings.get_engine("OPENAI_DALLE3").expect("engine");
+        assert!(cfg.key_set());
+        assert_eq!(cfg.model.as_deref(), Some("dall-e-3"));
+        assert_eq!(cfg.base_url.as_deref(), Some("https://api.example.com/v1"));
+
+        assert_eq!(settings.engine_names(), vec!["openai_dalle3".to_string()]);
+        clear_imagai_env();
+    }
+
+    #[test]
+    fn placeholder_key_is_not_set() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        clear_imagai_env();
+        std::env::set_var("IMAGAI__ENGINES__MOCK__API_KEY", "YOUR_OPENAI_API_KEY");
+        let settings = Settings::load();
+        let cfg = settings.get_engine("mock").expect("engine");
+        assert!(!cfg.key_set());
+        clear_imagai_env();
+    }
+
+    #[test]
+    fn empty_config_has_no_engines() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        clear_imagai_env();
+        let settings = Settings::load();
+        assert!(settings.engines.is_empty());
+        assert_eq!(settings.default_engine, None);
+        assert_eq!(settings.output_dir, PathBuf::from("generated_images"));
+        clear_imagai_env();
+    }
+}

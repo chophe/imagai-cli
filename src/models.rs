@@ -120,3 +120,75 @@ pub struct ModelInfo {
     #[serde(default)]
     pub model: Option<String>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_images_response_with_b64() {
+        let json = r#"{
+            "data": [{"b64_json": "QUJD"}, {"url": "https://x/y.png"}],
+            "usage": {"total_tokens": 10},
+            "estimated_cost": {"total": "0.04"}
+        }"#;
+        let parsed: ImagesResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.data.len(), 2);
+        assert_eq!(parsed.data[0].b64_json.as_deref(), Some("QUJD"));
+        assert_eq!(parsed.data[0].url, None);
+        assert_eq!(parsed.data[1].url.as_deref(), Some("https://x/y.png"));
+        assert_eq!(parsed.usage.unwrap()["total_tokens"], 10);
+        assert_eq!(parsed.estimated_cost.unwrap()["total"], "0.04");
+    }
+
+    #[test]
+    fn images_response_defaults_missing_fields() {
+        let parsed: ImagesResponse = serde_json::from_str(r#"{"data": []}"#).unwrap();
+        assert!(parsed.data.is_empty());
+        assert_eq!(parsed.usage, None);
+        assert_eq!(parsed.estimated_cost, None);
+    }
+
+    #[test]
+    fn parses_chat_response_text() {
+        let json =
+            r#"{"choices": [{"message": {"content": "hello"}}], "usage": {"total_tokens": 3}}"#;
+        let parsed: ChatResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            parsed.choices[0].message.content.as_ref().unwrap().as_str(),
+            Some("hello")
+        );
+        assert_eq!(parsed.usage.unwrap()["total_tokens"], 3);
+    }
+
+    #[test]
+    fn parses_chat_response_images() {
+        let json = r#"{"choices": [{"message": {
+            "content": [{"type": "text", "text": "here"}],
+            "images": [{"image_url": {"url": "https://x/img.png"}}]
+        }}]}"#;
+        let parsed: ChatResponse = serde_json::from_str(json).unwrap();
+        let msg = &parsed.choices[0].message;
+        assert_eq!(msg.content.as_ref().unwrap()[0]["text"], "here");
+        let img = msg.images.as_ref().unwrap()[0].image_url.as_ref().unwrap();
+        assert_eq!(img.url.as_deref(), Some("https://x/img.png"));
+    }
+
+    #[test]
+    fn parses_models_list() {
+        let json = r#"{"data": [{"id": "dall-e-3"}, {"id": "gpt-4o"}]}"#;
+        let parsed: ModelsListResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.data[0].id.as_deref(), Some("dall-e-3"));
+        assert_eq!(parsed.data[1].id.as_deref(), Some("gpt-4o"));
+    }
+
+    #[test]
+    fn request_defaults() {
+        let req = ImageGenerationRequest::default();
+        assert_eq!(req.size, "1024x1024");
+        assert_eq!(req.quality, "standard");
+        assert_eq!(req.style, "vivid");
+        assert_eq!(req.n, 1);
+        assert_eq!(req.response_format, "b64_json");
+    }
+}

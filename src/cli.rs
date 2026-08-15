@@ -413,3 +413,40 @@ pub fn is_image_model(model_id: &str) -> bool {
     ];
     INDICATORS.iter().any(|ind| mid.contains(ind))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn image_model_heuristic() {
+        let image = [
+            "dall-e-3",
+            "dall-e-2",
+            "gpt-image-1",
+            "google/imagen-4.0",
+            "imagen-3.0-generate-001",
+            "stability.stable-image-ultra-v1:1",
+            "stability.sd3-large",
+            "black-forest-labs/flux",
+            "flux-1.1-pro",
+            "amazon.titan-image-generator-v1",
+        ];
+        for m in image {
+            assert!(is_image_model(m), "{m} should be detected as image model");
+        }
+        let non_image = [
+            "gpt-4o",
+            "gpt-4.1-mini",
+            "google/gemini-2.0-flash",
+            "claude-3-5-sonnet",
+            "text-embedding-3-small",
+        ];
+        for m in non_image {
+            assert!(
+                !is_image_model(m),
+                "{m} should NOT be detected as image model"
+            );
+        }
+    }
+}
