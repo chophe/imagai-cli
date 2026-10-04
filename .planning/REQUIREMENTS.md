@@ -66,22 +66,22 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| EDIT-01 | — | Pending |
-| EDIT-02 | — | Pending |
-| EDIT-03 | — | Pending |
-| BRCH-01 | — | Pending |
-| BRCH-02 | — | Pending |
-| BRCH-03 | — | Pending |
-| BRCH-04 | — | Pending |
-| PRVD-01 | — | Pending |
-| ROB-01 | — | Pending |
-| DIST-01 | — | Pending |
+| EDIT-01 | Phase 1 | Pending |
+| EDIT-02 | Phase 1 | Pending |
+| EDIT-03 | Phase 1 | Pending |
+| BRCH-01 | Phase 2 | Pending |
+| BRCH-02 | Phase 2 | Pending |
+| BRCH-03 | Phase 2 | Pending |
+| BRCH-04 | Phase 2 | Pending |
+| PRVD-01 | Phase 3 | Pending |
+| ROB-01 | Phase 4 | Pending |
+| DIST-01 | Phase 4 | Pending |
 
 **Coverage:**
 - v1 requirements: 10 total
-- Mapped to phases: 0
-- Unmapped: 10 ⚠️ (roadmap creation fills this)
+- Mapped to phases: 10 ✓
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-10-04*
-*Last updated: 2026-10-04 after initial definition*
+*Last updated: 2026-10-04 after roadmap creation (10/10 mapped)*
