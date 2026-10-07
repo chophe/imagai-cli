@@ -362,10 +362,7 @@ async fn cmd_edit(args: &EditArgs, settings: &Settings) -> anyhow::Result<()> {
                 );
             };
             let picked = picked.to_string_lossy().to_string();
-            println!(
-                "{} Using most recent image: {picked}",
-                "🖼️".bright_cyan()
-            );
+            println!("{} Using most recent image: {picked}", "🖼️".bright_cyan());
             picked
         }
     };

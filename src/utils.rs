@@ -342,6 +342,7 @@ fn png_text_chunk(keyword: &str, text: &str) -> Vec<u8> {
 mod tests {
     use super::*;
     use base64::Engine;
+    use tempfile::TempDir;
 
     const PIXEL_PNG_B64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
 
@@ -502,31 +503,72 @@ mod tests {
     }
 
     #[test]
-    fn list_output_images_is_newest_first_and_extension_filtered() {
-        // `tempfile` is a dev-dependency and unavailable to lib unit tests, so
-        // this builds its own scratch dir under the system temp root.
-        let root = std::env::temp_dir().join(format!("imagai-list-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&root).unwrap();
-        std::fs::write(root.join("old.png"), b"x").unwrap();
-        std::fs::write(root.join("new.png"), b"x").unwrap();
-        std::fs::write(root.join("notes.txt"), b"x").unwrap();
-        std::fs::create_dir(root.join("nested.png")).unwrap();
+    fn list_output_images_returns_newest_first() {
+        let root = TempDir::new().unwrap();
+        for name in ["a.png", "b.png", "c.png"] {
+            std::fs::write(root.path().join(name), b"x").unwrap();
+        }
 
         // Force a distinct mtime ordering rather than relying on write timing.
-        let past = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
-        std::fs::File::options()
-            .write(true)
-            .open(root.join("old.png"))
-            .unwrap()
-            .set_modified(past)
-            .unwrap();
+        let now = std::time::SystemTime::now();
+        for (name, secs) in [("a.png", 120u64), ("b.png", 60u64)] {
+            std::fs::File::options()
+                .write(true)
+                .open(root.path().join(name))
+                .unwrap()
+                .set_modified(now - std::time::Duration::from_secs(secs))
+                .unwrap();
+        }
 
-        let found: Vec<String> = list_output_images(&root)
+        let found: Vec<String> = list_output_images(root.path())
             .into_iter()
             .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
             .collect();
-        let _ = std::fs::remove_dir_all(&root);
-        assert_eq!(found, vec!["new.png", "old.png"], "newest first");
+        assert_eq!(found, vec!["c.png", "b.png", "a.png"], "newest first");
+    }
+
+    #[test]
+    fn list_output_images_ignores_non_image_files() {
+        let root = TempDir::new().unwrap();
+        std::fs::write(root.path().join("keep.png"), b"x").unwrap();
+        std::fs::write(root.path().join("notes.txt"), b"x").unwrap();
+        std::fs::write(root.path().join("clip.mp4"), b"x").unwrap();
+        std::fs::create_dir(root.path().join("nested")).unwrap();
+
+        let found: Vec<String> = list_output_images(root.path())
+            .into_iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(found, vec!["keep.png"], "only the image file");
+    }
+
+    #[test]
+    fn list_output_images_tiebreaks_identical_mtimes() {
+        let root = TempDir::new().unwrap();
+        std::fs::write(root.path().join("alpha.png"), b"x").unwrap();
+        std::fs::write(root.path().join("beta.png"), b"x").unwrap();
+
+        // Same fixed mtime for both files: ordering must fall back to path.
+        let fixed = std::time::SystemTime::now() - std::time::Duration::from_secs(30);
+        for name in ["alpha.png", "beta.png"] {
+            std::fs::File::options()
+                .write(true)
+                .open(root.path().join(name))
+                .unwrap()
+                .set_modified(fixed)
+                .unwrap();
+        }
+
+        let names = || {
+            list_output_images(root.path())
+                .into_iter()
+                .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
+                .collect::<Vec<_>>()
+        };
+        let first = names();
+        let second = names();
+        assert_eq!(first, vec!["alpha.png", "beta.png"], "name order");
+        assert_eq!(second, first, "stable across calls");
     }
 
     #[test]

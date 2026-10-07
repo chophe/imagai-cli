@@ -491,6 +491,63 @@ async fn edit_without_image_uses_most_recent_output() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn edit_without_image_fails_when_output_dir_is_empty() {
+    let mock = MockServer::start().await;
+    let out = TempDir::new().unwrap();
+
+    cmd_edit(&mock, out.path())
+        .args(["edit", "-p", "make it sunset"])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "No images found in output directory",
+        ))
+        .stderr(predicate::str::contains("--image"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn edit_explicit_image_overrides_the_newest() {
+    let mock = MockServer::start().await;
+    let out = TempDir::new().unwrap();
+    let out_path = out.path().to_path_buf();
+    let older = seed_source_png(out.path(), "older.png");
+    seed_source_png(out.path(), "newer.png");
+
+    // `newer.png` holds the later mtime, but the explicit path must win.
+    let now = std::time::SystemTime::now();
+    std::fs::File::options()
+        .write(true)
+        .open(out.path().join("older.png"))
+        .unwrap()
+        .set_modified(now - std::time::Duration::from_secs(60))
+        .unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(out.path().join("newer.png"))
+        .unwrap()
+        .set_modified(now + std::time::Duration::from_secs(60))
+        .unwrap();
+
+    cmd_edit(&mock, out.path())
+        .args(["edit", "--image"])
+        .arg(&older)
+        .args(["-p", "make it sunset"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Using most recent image").not());
+
+    assert!(
+        out_path.join("older-edit.png").exists(),
+        "older-edit.png written"
+    );
+    assert!(
+        !out_path.join("newer-edit.png").exists(),
+        "newer-edit.png must not be written"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn edit_empty_prompt_fails() {
     let mock = MockServer::start().await;
     let out = TempDir::new().unwrap();
