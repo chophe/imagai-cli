@@ -462,3 +462,20 @@ async fn edit_endpoint_saves_edited_image() {
     assert_eq!(mock.requests_for("/v1/images/edits").len(), 1);
     assert_eq!(mock.requests_for("/v1/images/generations").len(), 0);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn edit_form_is_served_with_source_and_ref_pickers() {
+    let mock = MockServer::start().await;
+    let out = TempDir::new().unwrap();
+    let app = web::router(test_settings(&mock, out.path()));
+
+    // `web_interface.html` is `include_str!`-ed at compile time, so a serve
+    // test proves the edited file is embedded and reaches the browser — the
+    // strongest automated check available with no browser tooling configured.
+    let (status, value) = get(app, "/").await;
+    assert_eq!(status, StatusCode::OK);
+    let html = value.as_str().expect("HTML body");
+    for needle in ["edit_source", "edit_refs", "edit_prompt", "/api/edit"] {
+        assert!(html.contains(needle), "served HTML contains {needle}");
+    }
+}

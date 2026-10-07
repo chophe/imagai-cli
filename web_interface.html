@@ -517,7 +517,49 @@
                     🎨 Generate Image
                 </button>
             </form>
-            
+
+            <form id="editForm">
+                <div class="section-title">Edit an existing image</div>
+
+                <div class="form-group full-width">
+                    <label for="edit_prompt">Change instruction</label>
+                    <textarea id="edit_prompt" name="prompt" placeholder="Describe the change, e.g. make it sunset..."></textarea>
+                    <div class="help-text">The source image already carries the scene, so the instruction describes only the change</div>
+                </div>
+
+                <div class="form-group">
+                    <label for="edit_source">Source image</label>
+                    <select id="edit_source" name="source">
+                        <option value="">Use the most recent image</option>
+                    </select>
+                    <div class="help-text">An image already in the output directory</div>
+                </div>
+
+                <div class="form-group">
+                    <label for="edit_refs">Reference images (optional, ctrl/cmd-click for multiple)</label>
+                    <select id="edit_refs" name="refs" multiple size="5"></select>
+                    <div class="help-text">Extra images to blend in, in the order selected</div>
+                </div>
+
+                <div class="form-group">
+                    <label for="edit_engine">Engine</label>
+                    <select id="edit_engine" name="engine">
+                        <option value="">Use Default Engine</option>
+                    </select>
+                    <div class="help-text">Must be an engine that accepts image input</div>
+                </div>
+
+                <div class="form-group">
+                    <label for="edit_output">Output filename</label>
+                    <input type="text" id="edit_output" name="output" placeholder="edited_image.png">
+                    <div class="help-text">Leave empty for a source-derived filename</div>
+                </div>
+
+                <button type="submit" class="generate-btn" id="editBtn">
+                    ✏️ Edit Image
+                </button>
+            </form>
+
             <div class="output-section">
                 <div class="output-title">Output</div>
                 <div class="loading" id="loading">
@@ -696,6 +738,10 @@
                             outputElement.textContent += `\n❌ Image ${res.index}: ${res.error}`;
                         }
                     });
+
+                    // A freshly generated image becomes selectable in the
+                    // edit pickers without a page reload.
+                    loadOutputImages();
                 } else {
                     outputElement.textContent += `\n❌ Generation failed: ${result.error}`;
                 }
@@ -747,14 +793,14 @@
             try {
                 const response = await fetch('/api/engines');
                 const result = await response.json();
-                
+
                 if (result.success) {
                     const engineSelect = document.getElementById('engine');
                     // Clear existing options except the first one
                     while (engineSelect.children.length > 1) {
                         engineSelect.removeChild(engineSelect.lastChild);
                     }
-                    
+
                     // Add engines from API
                     result.engines.forEach(engine => {
                         const option = document.createElement('option');
@@ -762,14 +808,156 @@
                         option.textContent = `${engine.name} (${engine.model})`;
                         engineSelect.appendChild(option);
                     });
-                    
+
                     // Set default engine if available
                     if (result.default_engine) {
                         engineSelect.value = result.default_engine;
                     }
+
+                    // The edit form keeps its own engine picker fed by the
+                    // same list, so an edit-capable engine is selectable.
+                    const editEngineSelect = document.getElementById('edit_engine');
+                    if (editEngineSelect) {
+                        while (editEngineSelect.children.length > 1) {
+                            editEngineSelect.removeChild(editEngineSelect.lastChild);
+                        }
+                        result.engines.forEach(engine => {
+                            const option = document.createElement('option');
+                            option.value = engine.name;
+                            option.textContent = `${engine.name} (${engine.model})`;
+                            editEngineSelect.appendChild(option);
+                        });
+                        if (result.default_engine) {
+                            editEngineSelect.value = result.default_engine;
+                        }
+                    }
                 }
             } catch (error) {
                 console.error('Failed to load engines:', error);
+            }
+        }
+
+        // Load output images from the gallery API into the edit pickers
+        async function loadOutputImages() {
+            try {
+                const response = await fetch('/api/images');
+                const result = await response.json();
+
+                if (result.success) {
+                    const sourceSelect = document.getElementById('edit_source');
+                    const refsSelect = document.getElementById('edit_refs');
+                    sourceSelect.innerHTML = '';
+                    refsSelect.innerHTML = '';
+
+                    // Sentinel first: an empty value means "let the server
+                    // pick the most recent image", the same auto-pick the
+                    // CLI has.
+                    const recentOption = document.createElement('option');
+                    recentOption.value = '';
+                    recentOption.textContent = 'Use the most recent image';
+                    sourceSelect.appendChild(recentOption);
+
+                    // Newest-first from the API — do not re-sort client-side.
+                    result.images.forEach(entry => {
+                        const sourceOption = document.createElement('option');
+                        sourceOption.value = entry.filename;
+                        sourceOption.textContent = entry.filename;
+                        sourceSelect.appendChild(sourceOption);
+
+                        const refOption = document.createElement('option');
+                        refOption.value = entry.filename;
+                        refOption.textContent = entry.filename;
+                        refsSelect.appendChild(refOption);
+                    });
+                }
+            } catch (error) {
+                console.error('Failed to load output images:', error);
+            }
+        }
+
+        // Execute an edit of an existing output image via API
+        async function executeEdit() {
+            const outputElement = document.getElementById('output-content');
+            const imagePreview = document.getElementById('image-preview');
+
+            // Explicit form values only — refs as an array from
+            // selectedOptions, so a multi-select actually transmits multiple
+            // entries in the order they were selected.
+            const body = {};
+            body.prompt = document.getElementById('edit_prompt').value.trim();
+            const editEngine = document.getElementById('edit_engine').value;
+            if (editEngine) {
+                body.engine = editEngine;
+            }
+            const editSource = document.getElementById('edit_source').value;
+            if (editSource) {
+                body.source = editSource;
+            }
+            const editOutput = document.getElementById('edit_output').value.trim();
+            if (editOutput) {
+                body.output = editOutput;
+            }
+            body.refs = Array.from(document.getElementById('edit_refs').selectedOptions).map(o => o.value);
+
+            outputElement.textContent = `🚀 Starting image edit...\n📝 Change: ${body.prompt}\n🖼️ Source: ${body.source || 'most recent image'}\n`;
+
+            try {
+                const response = await fetch('/api/edit', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(body)
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    outputElement.textContent += `\n✅ Edit completed successfully!\n`;
+
+                    // Display results
+                    result.results.forEach((res, index) => {
+                        if (res.success) {
+                            outputElement.textContent += `\n📸 Edited image: success`;
+                            if (res.saved_path) {
+                                outputElement.textContent += `\n📁 Saved to: ${res.saved_path}`;
+                            }
+
+                            // Display image preview with the same styling
+                            // the generate path applies
+                            if (res.image_data) {
+                                const imgElement = document.createElement('img');
+                                imgElement.src = res.image_data;
+                                imgElement.style.maxWidth = '100%';
+                                imgElement.style.maxHeight = '500px';
+                                imgElement.style.borderRadius = '10px';
+                                imgElement.style.boxShadow = '0 10px 30px rgba(0,0,0,0.2)';
+                                imgElement.style.marginTop = '10px';
+
+                                const imgContainer = document.createElement('div');
+                                imgContainer.style.textAlign = 'center';
+                                imgContainer.style.marginTop = '20px';
+                                imgContainer.appendChild(imgElement);
+
+                                if (index === 0) {
+                                    imagePreview.innerHTML = '';
+                                }
+                                imagePreview.appendChild(imgContainer);
+                            }
+                        } else {
+                            outputElement.textContent += `\n❌ ${res.error}`;
+                        }
+                    });
+
+                    // The edited result joins the picker without a reload.
+                    loadOutputImages();
+                } else {
+                    outputElement.textContent += `\n❌ Edit failed: ${result.error}`;
+                }
+
+            } catch (error) {
+                outputElement.textContent += `\n💥 Network error: ${error.message}`;
+                console.error('Edit error:', error);
             }
         }
         
@@ -864,7 +1052,34 @@
         document.addEventListener('DOMContentLoaded', function() {
             loadSettings();
             loadEngines();
+            loadOutputImages();
             initializeImageUpload();
+        });
+
+        // Edit form submission handler
+        document.getElementById('editForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+
+            const editBtn = document.getElementById('editBtn');
+            const loading = document.getElementById('loading');
+            const outputContent = document.getElementById('output-content');
+            const imagePreview = document.getElementById('image-preview');
+
+            // Show loading state exactly as the generate handler does.
+            editBtn.disabled = true;
+            loading.classList.add('show');
+            outputContent.textContent = '';
+            imagePreview.innerHTML = '';
+
+            try {
+                await executeEdit();
+            } catch (error) {
+                outputContent.textContent = `Error: ${error.message}`;
+            } finally {
+                editBtn.disabled = false;
+                loading.classList.remove('show');
+                loadOutputImages();
+            }
         });
     </script>
 </body>
