@@ -256,6 +256,127 @@ async fn serve_image_blocks_traversal() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn edit_endpoint_rejects_traversal_source() {
+    let mock = MockServer::start().await;
+    let out = TempDir::new().unwrap();
+    let app = web::router(edit_capable_settings(&mock, out.path()));
+
+    let payload = json!({"prompt": "x", "source": "../../.env"});
+    let (status, value) = post_json(app, "/api/edit", &payload).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(value["success"], false);
+    assert!(
+        value["error"].as_str().unwrap().contains("plain filename"),
+        "explicit refusal, not silent reduction: {}",
+        value["error"]
+    );
+    assert!(mock.requests().is_empty(), "nothing was read or sent");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn edit_endpoint_rejects_traversal_reference() {
+    let mock = MockServer::start().await;
+    let out = TempDir::new().unwrap();
+    seed_source_png(out.path(), "source.png");
+    let app = web::router(edit_capable_settings(&mock, out.path()));
+
+    let payload = json!({"prompt": "x", "source": "source.png", "refs": ["../../Cargo.toml"]});
+    let (status, value) = post_json(app, "/api/edit", &payload).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(value["success"], false);
+    assert!(
+        value["error"].as_str().unwrap().contains("plain filename"),
+        "explicit refusal, not silent reduction: {}",
+        value["error"]
+    );
+    assert!(mock.requests().is_empty(), "nothing was read or sent");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn edit_endpoint_rejects_traversal_output() {
+    let mock = MockServer::start().await;
+    let out = TempDir::new().unwrap();
+    seed_source_png(out.path(), "source.png");
+    let app = web::router(edit_capable_settings(&mock, out.path()));
+
+    let payload = json!({"prompt": "x", "source": "source.png", "output": "../../escaped.png"});
+    let (status, value) = post_json(app, "/api/edit", &payload).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(value["success"], false);
+    assert!(mock.requests().is_empty(), "nothing was read or sent");
+    // The write side: nothing escaped the output directory.
+    let escaped = out.path().join("..").join("escaped.png");
+    assert!(!escaped.exists(), "no file written outside output_dir");
+    assert!(
+        !out.path().parent().unwrap().join("escaped.png").exists(),
+        "no file written outside output_dir"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn edit_endpoint_reports_missing_source() {
+    let mock = MockServer::start().await;
+    let out = TempDir::new().unwrap();
+    let app = web::router(edit_capable_settings(&mock, out.path()));
+
+    let payload = json!({"prompt": "x", "source": "nope.png"});
+    let (status, value) = post_json(app, "/api/edit", &payload).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(value["success"], false);
+    assert!(
+        value["error"].as_str().unwrap().contains("nope.png"),
+        "error names the file: {}",
+        value["error"]
+    );
+    assert!(mock.requests().is_empty(), "nothing was sent");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn edit_endpoint_reports_incapable_engine() {
+    let mock = MockServer::start().await;
+    let out = TempDir::new().unwrap();
+    seed_source_png(out.path(), "source.png");
+    // Default fixture model `dall-e-3` cannot take image input (D-05).
+    let app = web::router(test_settings(&mock, out.path()));
+
+    let payload = json!({"prompt": "x", "source": "source.png"});
+    let (status, value) = post_json(app, "/api/edit", &payload).await;
+    assert_eq!(status, StatusCode::OK);
+    let body = value.to_string();
+    let failed = value["success"] == false
+        || value["results"]
+            .as_array()
+            .map(|r| r.iter().any(|e| e["success"] == false))
+            .unwrap_or(false);
+    assert!(failed, "edit reports failure: {body}");
+    assert!(
+        body.contains("cannot accept image input"),
+        "gate message: {body}"
+    );
+    assert!(body.contains("dall-e-3"), "names the model: {body}");
+    assert!(mock.requests().is_empty(), "no credits spent");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn edit_endpoint_rejects_more_than_sixteen_images() {
+    let mock = MockServer::start().await;
+    let out = TempDir::new().unwrap();
+    let app = web::router(edit_capable_settings(&mock, out.path()));
+
+    let refs: Vec<Value> = (0..16)
+        .map(|i| Value::String(format!("ref-{i}.png")))
+        .collect();
+    let payload = json!({"prompt": "x", "source": "source.png", "refs": refs});
+    let (status, value) = post_json(app, "/api/edit", &payload).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(value["success"], false);
+    let error = value["error"].as_str().unwrap();
+    assert!(error.contains("17"), "states the requested count: {error}");
+    assert!(error.contains("16"), "states the allowed count: {error}");
+    assert!(mock.requests().is_empty(), "nothing was read or sent");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn generate_cli_rejects_non_imagai_commands() {
     let mock = MockServer::start().await;
     let out = TempDir::new().unwrap();
@@ -306,8 +427,7 @@ fn seed_source_png(dir: &Path, name: &str) -> std::path::PathBuf {
 /// the capability bail instead of the happy path.
 fn edit_capable_settings(mock: &MockServer, out_dir: &Path) -> Settings {
     let mut settings = test_settings(mock, out_dir);
-    settings.engines.get_mut("mock").expect("mock engine").model =
-        Some("gpt-image-1".to_string());
+    settings.engines.get_mut("mock").expect("mock engine").model = Some("gpt-image-1".to_string());
     settings
 }
 

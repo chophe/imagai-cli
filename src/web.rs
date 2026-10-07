@@ -239,6 +239,16 @@ fn output_dir_file(dir: &Path, raw: &str) -> Option<PathBuf> {
         .map(|name| dir.join(name))
 }
 
+/// True when `raw` is already a bare filename with no directory parts.
+/// Anything carrying a separator is refused outright rather than silently
+/// reduced: the user asked for something that does not exist inside
+/// `output_dir`, and saying so beats guessing (T-01-10, T-01-11).
+fn is_plain_filename(raw: &str) -> bool {
+    !raw.contains('/')
+        && !raw.contains('\\')
+        && Path::new(raw).file_name().and_then(|n| n.to_str()) == Some(raw)
+}
+
 /// Shared per-result JSON shape for `/api/generate` and `/api/edit`, so the
 /// two endpoints cannot drift apart on `index`, `success`, `error`,
 /// `saved_path`, `image_data`, `image_url`, `image_b64_json` or
@@ -278,6 +288,36 @@ fn result_items_json(results: &[ImageGenerationResponse]) -> Vec<Value> {
 }
 
 async fn edit(State(state): State<AppState>, Json(payload): Json<EditPayload>) -> Response {
+    // Trust boundary first, before any read or network call: every
+    // path-shaped field must already be a bare filename. A value carrying a
+    // separator is refused outright rather than silently reduced (T-01-10,
+    // T-01-11).
+    for raw in payload
+        .source
+        .iter()
+        .chain(payload.refs.iter())
+        .chain(payload.output.iter())
+    {
+        if !is_plain_filename(raw) {
+            return Json(json!({
+                "success": false,
+                "error": format!("'{raw}' is not a plain filename inside output_dir"),
+            }))
+            .into_response();
+        }
+    }
+
+    // Reference count before any read or network call: over 16 is a reported
+    // error stating both counts, never a silent truncation.
+    let requested = 1 + payload.refs.len();
+    if requested > 16 {
+        return Json(json!({
+            "success": false,
+            "error": format!("{requested} images requested but the provider accepts at most 16"),
+        }))
+        .into_response();
+    }
+
     // Engine resolution mirrors `generate` exactly: an explicit engine, then
     // the default, then the same `success: false` envelopes — never a 400.
     let engine = payload
@@ -313,10 +353,7 @@ async fn edit(State(state): State<AppState>, Json(payload): Json<EditPayload>) -
                 }))
                 .into_response();
             };
-            let name = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or(raw);
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or(raw);
             if !path.is_file() {
                 return Json(json!({
                     "success": false,
