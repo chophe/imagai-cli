@@ -200,6 +200,49 @@ async fn list_images_and_serve() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn list_images_returns_every_output_image_newest_first() {
+    let mock = MockServer::start().await;
+    mock.set_images_mode(ImagesMode::B64 { count: 1 });
+    let out = TempDir::new().unwrap();
+    let app = web::router(test_settings(&mock, out.path()));
+
+    // Drive through the real pipeline so both files carry the injected
+    // metadata chunks, rather than writing files directly.
+    for prompt in ["a first gallery cat", "a second gallery cat"] {
+        let payload = json!({"prompt": prompt});
+        let (status, value) = post_json(app.clone(), "/api/generate", &payload).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(value["success"], true);
+    }
+
+    let (status, value) = get(app.clone(), "/api/images").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(value["success"], true);
+    let images = value["images"].as_array().unwrap();
+    assert_eq!(images.len(), 2);
+
+    for entry in images {
+        for key in ["filename", "size", "created", "modified", "url"] {
+            assert!(entry.get(key).is_some(), "entry carries {key}");
+        }
+        let filename = entry["filename"].as_str().unwrap();
+        assert!(!entry["modified"].as_str().unwrap().is_empty());
+        assert_eq!(
+            entry["url"].as_str().unwrap(),
+            format!("/api/images/{filename}"),
+            "url matches its own filename"
+        );
+    }
+
+    // Newest first, compared on the derived timestamp strings. Both files are
+    // written within the same second in CI, so only the non-decreasing
+    // property is asserted — a strict ordering would flake.
+    let first = images[0]["modified"].as_str().unwrap();
+    let second = images[1]["modified"].as_str().unwrap();
+    assert!(first >= second, "newest first: {first} >= {second}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn serve_image_blocks_traversal() {
     let mock = MockServer::start().await;
     let out = TempDir::new().unwrap();
