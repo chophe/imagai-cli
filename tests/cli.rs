@@ -486,6 +486,77 @@ async fn edit_unknown_engine_fails() {
         .stderr(predicate::str::contains("not configured"));
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn edit_sends_multiple_reference_images_in_order() {
+    let mock = MockServer::start().await;
+    let out = TempDir::new().unwrap();
+    let source = seed_source_png(out.path(), "source.png");
+    let ref_a = seed_source_png(out.path(), "ref-a.png");
+    let ref_b = seed_source_png(out.path(), "ref-b.png");
+
+    cmd_edit(&mock, out.path())
+        .args(["edit", "--image"])
+        .arg(&source)
+        .arg("--ref")
+        .arg(&ref_a)
+        .arg("--ref")
+        .arg(&ref_b)
+        .args(["-p", "blend them"])
+        .assert()
+        .success();
+
+    let bodies = mock.raw_requests_for("images/edits");
+    assert_eq!(bodies.len(), 1);
+    let body = &bodies[0];
+
+    // The multipart body is what makes ordering observable — the JSON view is
+    // empty for a multipart request.
+    let offsets: Vec<usize> = (0..body.len())
+        .filter(|i| body[*i..].starts_with(b"image[]"))
+        .collect();
+    assert_eq!(offsets.len(), 3, "one image[] part per image");
+    assert!(
+        offsets[0] < offsets[1] && offsets[1] < offsets[2],
+        "source first, then refs in the given order: {offsets:?}"
+    );
+
+    // Source filename precedes both reference filenames in the wire order.
+    let pos = |needle: &[u8]| (0..body.len()).find(|i| body[*i..].starts_with(needle));
+    let (s, a, b) = (
+        pos(b"source.png").expect("source filename"),
+        pos(b"ref-a.png").expect("ref-a filename"),
+        pos(b"ref-b.png").expect("ref-b filename"),
+    );
+    assert!(s < a && a < b, "source, ref-a, ref-b in order");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn edit_rejects_more_than_sixteen_images() {
+    let mock = MockServer::start().await;
+    let out = TempDir::new().unwrap();
+    let source = seed_source_png(out.path(), "source.png");
+
+    let mut c = cmd_edit(&mock, out.path());
+    c.arg("edit")
+        .arg("--image")
+        .arg(&source)
+        .arg("-p")
+        .arg("too many");
+    for _ in 0..16 {
+        c.arg("--ref").arg(&source);
+    }
+    c.assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("17"))
+        .stderr(predicate::str::contains("16"));
+
+    assert!(
+        mock.requests().is_empty(),
+        "an over-limit request must not be sent"
+    );
+}
+
 // ---------------------------------------------------------------- errors
 
 #[tokio::test(flavor = "multi_thread")]
