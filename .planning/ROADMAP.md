@@ -28,7 +28,7 @@ Brownfield extension of the existing modular monolith (shared core `src/core.rs`
 
 **Plans**: 5 plans
 
-- [ ] 01-00-PLAN.md — Wave-0 supply-chain gate: human decide-in on vendoring `mime_guess` 2.0.5 and `unicase` 2.10.0 before the `multipart` feature pulls them in
+- [ ] 01-00-PLAN.md — Wave-0 supply-chain gate: a human decide-or-stop on vendoring `mime_guess` 2.0.5 and `unicase` 2.10.0, before the `multipart` feature pulls them in
 - [ ] 01-01-PLAN.md — Walking skeleton: `imagai edit` from an explicit path (multipart + chat transports, capability gate, `-edit` filename, PNG lineage, multi-reference)
 - [ ] 01-02-PLAN.md — EDIT-02: pick the newest `output_dir` image when `--image` is omitted; one shared `list_output_images` helper for CLI and web
 - [ ] 01-03-PLAN.md — Web parity: `POST /api/edit` with the output_dir filename guard, plus the browser edit form with source/reference pickers
