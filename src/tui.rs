@@ -49,6 +49,13 @@ struct LogLine {
     text: String,
 }
 
+struct PickerState {
+    entries: Vec<String>,
+    selected: usize,
+    scroll: usize,
+    height: usize,
+}
+
 /// A minimal single-line text editor with a byte-indexed cursor.
 #[derive(Debug, Clone, Default)]
 struct Editor {
@@ -121,6 +128,7 @@ struct App {
     editor: Editor,
     edit_focus: usize,
     edit_editing: Option<usize>,
+    edit_picker: Option<PickerState>,
     edit_refs_editing: bool,
 
     prompt: String,
@@ -162,6 +170,7 @@ impl App {
             editor: Editor::default(),
             edit_focus: EDIT_ROW_SOURCE,
             edit_editing: None,
+            edit_picker: None,
             edit_refs_editing: false,
             prompt: String::new(),
             engine: settings.default_engine.clone().unwrap_or_default(),
@@ -571,6 +580,9 @@ impl App {
     // ---- event handling ----
 
     fn handle_key(&mut self, code: KeyCode) -> bool {
+        if self.edit_picker.is_some() {
+            return self.handle_picker_key(code);
+        }
         if self.tab == 1 {
             return self.handle_edit_key(code);
         }
@@ -718,9 +730,15 @@ impl App {
             KeyCode::Enter => {
                 if self.edit_focus == EDIT_ROW_SUBMIT {
                     self.start_edit();
+                } else if self.edit_focus == EDIT_ROW_SOURCE {
+                    self.open_source_picker();
                 } else {
                     self.begin_edit_field(self.edit_focus);
                 }
+                false
+            }
+            KeyCode::Char('e') if self.edit_focus == EDIT_ROW_SOURCE => {
+                self.begin_edit_field(EDIT_ROW_SOURCE);
                 false
             }
             KeyCode::Char(' ') => {
@@ -771,6 +789,81 @@ impl App {
         if self.edit_editing == Some(row) {
             *self.edit_text_field_mut(row) = self.editor.content.clone();
         }
+    }
+
+    fn open_source_picker(&mut self) {
+        let entries: Vec<String> = crate::utils::list_output_images(&self.settings.output_dir)
+            .into_iter()
+            .map(|p| {
+                p.file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default()
+            })
+            .collect();
+        if entries.is_empty() {
+            self.push_log(
+                LogKind::Warn,
+                "No images found in the output directory — generate one first".to_string(),
+            );
+            return;
+        }
+        self.edit_picker = Some(PickerState {
+            entries,
+            selected: 0,
+            scroll: 0,
+            height: 0,
+        });
+    }
+
+    fn picker_move(&mut self, delta: isize) {
+        let Some(picker) = self.edit_picker.as_mut() else {
+            return;
+        };
+        if picker.entries.is_empty() {
+            return;
+        }
+        let len = picker.entries.len();
+        picker.selected = (picker.selected as isize + delta).clamp(0, len as isize - 1) as usize;
+        let height = picker.height.max(1);
+        if picker.selected < picker.scroll {
+            picker.scroll = picker.selected;
+        } else if picker.selected >= picker.scroll + height {
+            picker.scroll = picker.selected + 1 - height;
+        }
+        let max_scroll = len.saturating_sub(picker.height);
+        picker.scroll = picker.scroll.min(max_scroll);
+    }
+
+    fn picker_select(&mut self) {
+        let Some(picker) = self.edit_picker.as_ref() else {
+            return;
+        };
+        if picker.entries.is_empty() {
+            self.edit_picker = None;
+            return;
+        }
+        let name = picker.entries[picker.selected.min(picker.entries.len() - 1)].clone();
+        self.edit_source = name.clone();
+        if self.edit_editing == Some(EDIT_ROW_SOURCE) {
+            self.edit_editing = None;
+        }
+        self.edit_picker = None;
+        self.push_log(LogKind::Info, format!("Source image: {name}"));
+    }
+
+    fn picker_cancel(&mut self) {
+        self.edit_picker = None;
+    }
+
+    fn handle_picker_key(&mut self, code: KeyCode) -> bool {
+        match code {
+            KeyCode::Up | KeyCode::Char('k') => self.picker_move(-1),
+            KeyCode::Down | KeyCode::Char('j') => self.picker_move(1),
+            KeyCode::Enter => self.picker_select(),
+            KeyCode::Esc => self.picker_cancel(),
+            _ => {}
+        }
+        false
     }
 
     // ---- drawing ----
@@ -1037,6 +1130,74 @@ impl App {
             }
         ));
         frame.render_widget(Paragraph::new(Text::from(lines)).block(block), area);
+        self.draw_source_picker(frame, area);
+    }
+
+    fn draw_source_picker(&mut self, frame: &mut Frame, area: Rect) {
+        if self.edit_picker.is_none() {
+            return;
+        }
+        if area.width < 24 || area.height < 8 {
+            return;
+        }
+        // Read-only pass first so the borrow ends before the height writeback.
+        let (entries, selected, scroll) = {
+            let picker = self.edit_picker.as_ref().expect("picker open");
+            (picker.entries.clone(), picker.selected, picker.scroll)
+        };
+        if entries.is_empty() {
+            return;
+        }
+        let len = entries.len();
+        let width = (area.width * 2 / 3).clamp(20, area.width);
+        let height = ((len.max(3) + 2) as u16).min(area.height).max(5);
+        let x = area.x + area.width.saturating_sub(width) / 2;
+        let y = area.y + area.height.saturating_sub(height) / 2;
+        let popup = Rect::new(x, y, width, height);
+        let visible = height.saturating_sub(2) as usize;
+        if visible == 0 {
+            return;
+        }
+        let start = scroll.min(len.saturating_sub(1));
+        let mut end = (start + visible).min(len);
+        if end < len {
+            end = end.saturating_sub(1).max(start);
+        }
+        if let Some(picker) = self.edit_picker.as_mut() {
+            picker.height = visible;
+        }
+        let mut lines: Vec<Line> = Vec::new();
+        for (i, name) in entries[start..end].iter().enumerate() {
+            if start + i == selected {
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        "▶ ",
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        name.clone(),
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                ]));
+            } else {
+                lines.push(Line::from(Span::styled(
+                    format!("  {name}"),
+                    Style::default().fg(Color::Gray),
+                )));
+            }
+        }
+        if end < len {
+            lines.push(Line::from(Span::styled(
+                format!("… {} more", len - end),
+                Style::default().fg(Color::DarkGray),
+            )));
+        }
+        let block = Block::bordered().title(" Select source image ");
+        frame.render_widget(Paragraph::new(Text::from(lines)).block(block), popup);
     }
 
     fn draw_logs(&mut self, frame: &mut Frame, area: Rect) {
@@ -1310,8 +1471,16 @@ impl App {
                         .to_string()
                 }
             }
-            1 => "q Quit | Tab switch tab | ↑/↓ navigate | Enter edit/Edit | Space toggle"
-                .to_string(),
+            1 => {
+                if self.edit_picker.is_some() {
+                    "↑/↓ move | Enter select | Esc cancel".to_string()
+                } else if self.edit_editing.is_some() || self.edit_refs_editing {
+                    "Esc done | ←/→ move | Backspace del | type to insert".to_string()
+                } else {
+                    "q Quit | Tab switch tab | ↑/↓ navigate | Enter edit/Edit | e edit source path | Space toggle"
+                        .to_string()
+                }
+            }
             2 => "q Quit | Tab switch tab | f fetch models".to_string(),
             _ => "q Quit | Tab switch tab".to_string(),
         };
@@ -1381,6 +1550,7 @@ impl App {
                     if code == KeyCode::Tab
                         && self.editing.is_none()
                         && self.edit_editing.is_none()
+                        && self.edit_picker.is_none()
                         && !self.edit_refs_editing
                     {
                         self.tab = (self.tab + 1) % TABS.len();
@@ -1389,6 +1559,7 @@ impl App {
                     if code == KeyCode::BackTab
                         && self.editing.is_none()
                         && self.edit_editing.is_none()
+                        && self.edit_picker.is_none()
                         && !self.edit_refs_editing
                     {
                         self.tab = (self.tab + TABS.len() - 1) % TABS.len();
@@ -1444,7 +1615,10 @@ mod tests {
         let settings = edit_test_settings(tmp.path());
         let mut app = App::new(&settings);
         for row in 0..EDIT_ROWS {
-            assert!(!App::edit_row_label(row).is_empty(), "row {row} has a label");
+            assert!(
+                !App::edit_row_label(row).is_empty(),
+                "row {row} has a label"
+            );
             let _ = app.edit_text_field(row);
         }
         for row in 0..EDIT_ROW_SUBMIT {
@@ -1456,5 +1630,73 @@ mod tests {
     fn edit_row_labels_name_the_edit_fields() {
         let labels: Vec<_> = (0..EDIT_ROWS).map(App::edit_row_label).collect();
         assert_eq!(labels, vec!["Source", "Change", "Engine", "Output", "Edit"]);
+    }
+
+    fn write_file(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+        let p = dir.join(name);
+        std::fs::write(&p, b"x").unwrap();
+        p
+    }
+
+    fn set_mtime_ago(p: &std::path::Path, secs: u64) {
+        let t = std::time::SystemTime::now() - std::time::Duration::from_secs(secs);
+        std::fs::File::options()
+            .write(true)
+            .open(p)
+            .unwrap()
+            .set_modified(t)
+            .unwrap();
+    }
+
+    #[test]
+    fn picker_lists_newest_first() {
+        let tmp = TempDir::new().unwrap();
+        let a = write_file(tmp.path(), "seed_a.png");
+        let b = write_file(tmp.path(), "seed_b.png");
+        set_mtime_ago(&a, 60);
+        set_mtime_ago(&b, 10);
+        let settings = edit_test_settings(tmp.path());
+        let mut app = App::new(&settings);
+        app.open_source_picker();
+        let picker = app.edit_picker.as_ref().expect("picker open");
+        assert_eq!(
+            picker.entries,
+            vec!["seed_b.png".to_string(), "seed_a.png".to_string()]
+        );
+    }
+
+    #[test]
+    fn picker_selection_lands_in_source_field() {
+        let tmp = TempDir::new().unwrap();
+        let a = write_file(tmp.path(), "seed_a.png");
+        let b = write_file(tmp.path(), "seed_b.png");
+        set_mtime_ago(&a, 60);
+        set_mtime_ago(&b, 10);
+        let settings = edit_test_settings(tmp.path());
+        let mut app = App::new(&settings);
+        app.open_source_picker();
+        app.picker_move(1);
+        app.picker_move(1);
+        let selected = app.edit_picker.as_ref().expect("picker open").selected;
+        assert_eq!(selected, 1, "selection clamps at the list end");
+        let expected = app.edit_picker.as_ref().unwrap().entries[selected].clone();
+        app.picker_select();
+        assert_eq!(app.edit_source, expected);
+        assert!(app.edit_picker.is_none());
+    }
+
+    #[test]
+    fn picker_escape_leaves_source_unchanged() {
+        let tmp = TempDir::new().unwrap();
+        write_file(tmp.path(), "seed_a.png");
+        write_file(tmp.path(), "seed_b.png");
+        let settings = edit_test_settings(tmp.path());
+        let mut app = App::new(&settings);
+        app.edit_source = "keep-me.png".to_string();
+        app.open_source_picker();
+        app.picker_move(1);
+        app.picker_cancel();
+        assert_eq!(app.edit_source, "keep-me.png");
+        assert!(app.edit_picker.is_none());
     }
 }
