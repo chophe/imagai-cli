@@ -1,0 +1,33 @@
+{
+  "contract": "1.0.0",
+  "flavor": "core",
+  "milestone": null,
+  "phases": [
+    {
+      "number": "1",
+      "name": "Image Editing",
+      "status": "pending"
+    },
+    {
+      "number": "2",
+      "name": "Branching & Iteration History",
+      "status": "pending"
+    },
+    {
+      "number": "3",
+      "name": "Multi-Vendor Providers",
+      "status": "pending"
+    },
+    {
+      "number": "4",
+      "name": "Ship to Users",
+      "status": "pending"
+    }
+  ],
+  "next": {
+    "command": "/gsd:progress --next",
+    "label": "Advance to the next step",
+    "reason": "Phase 01 of 4 · 0% · executing"
+  },
+  "updated_at": "2026-10-07T13:13:40.199Z"
+}
