@@ -1699,4 +1699,99 @@ mod tests {
         assert_eq!(app.edit_source, "keep-me.png");
         assert!(app.edit_picker.is_none());
     }
+
+    const PIXEL_PNG_B64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+
+    fn seed_png(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+        use base64::Engine;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(PIXEL_PNG_B64)
+            .unwrap();
+        let p = dir.join(name);
+        std::fs::write(&p, &bytes).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&p)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now())
+            .unwrap();
+        p
+    }
+
+    #[test]
+    fn build_edit_request_rejects_empty_instruction() {
+        let tmp = TempDir::new().unwrap();
+        let settings = edit_test_settings(tmp.path());
+        let mut app = App::new(&settings);
+        app.edit_prompt = "   ".to_string();
+        assert!(app.build_edit_request().is_none());
+        let last = app.logs.last().expect("error logged");
+        assert!(
+            last.text.contains("Change instruction cannot be empty"),
+            "{}",
+            last.text
+        );
+    }
+
+    #[test]
+    fn build_edit_request_carries_source_and_refs_in_order() {
+        let tmp = TempDir::new().unwrap();
+        let source = seed_png(tmp.path(), "source.png");
+        seed_png(tmp.path(), "ref-a.png");
+        seed_png(tmp.path(), "ref-b.png");
+        // The auto-pick takes the newest file, so stamp the source newer
+        // than the refs instead of relying on write timing.
+        let future = std::time::SystemTime::now() + std::time::Duration::from_secs(60);
+        std::fs::File::options()
+            .write(true)
+            .open(&source)
+            .unwrap()
+            .set_modified(future)
+            .unwrap();
+        let settings = edit_test_settings(tmp.path());
+        let mut app = App::new(&settings);
+        app.edit_prompt = "make it sunset".to_string();
+        app.edit_refs = "ref-a.png, ref-b.png,".to_string();
+        let req = app.build_edit_request().expect("request built");
+        assert_eq!(
+            req.source_image.unwrap(),
+            source.to_string_lossy().to_string()
+        );
+        assert_eq!(req.ref_images.len(), 2);
+        assert_eq!(
+            req.ref_images[0],
+            tmp.path().join("ref-a.png").to_string_lossy().to_string()
+        );
+        assert_eq!(
+            req.ref_images[1],
+            tmp.path().join("ref-b.png").to_string_lossy().to_string()
+        );
+        assert_eq!(req.prompt, "make it sunset");
+    }
+
+    #[test]
+    fn build_edit_request_rejects_missing_reference() {
+        let tmp = TempDir::new().unwrap();
+        seed_png(tmp.path(), "source.png");
+        let settings = edit_test_settings(tmp.path());
+        let mut app = App::new(&settings);
+        app.edit_prompt = "make it sunset".to_string();
+        app.edit_refs = "absent.png".to_string();
+        assert!(app.build_edit_request().is_none());
+        let last = app.logs.last().expect("error logged");
+        assert!(last.text.contains("absent.png"), "{}", last.text);
+    }
+
+    #[test]
+    fn build_edit_request_rejects_unknown_engine() {
+        let tmp = TempDir::new().unwrap();
+        seed_png(tmp.path(), "source.png");
+        let settings = edit_test_settings(tmp.path());
+        let mut app = App::new(&settings);
+        app.edit_prompt = "make it sunset".to_string();
+        app.edit_engine = "nope".to_string();
+        assert!(app.build_edit_request().is_none());
+        let last = app.logs.last().expect("error logged");
+        assert!(last.text.contains("not configured"), "{}", last.text);
+    }
 }
