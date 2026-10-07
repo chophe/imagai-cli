@@ -31,17 +31,17 @@ Brownfield extension of the existing modular monolith (shared core `src/core.rs`
 **Plans**: 5 plans
 **Wave 1**
 
-- [ ] 01-00-PLAN.md — Wave-0 supply-chain gate: a human decide-or-stop on vendoring `mime_guess` 2.0.5 and `unicase` 2.10.0, before the `multipart` feature pulls them in
-- [ ] 01-01-PLAN.md — Walking skeleton: `imagai edit` from an explicit path (multipart + chat transports, capability gate, `-edit` filename, PNG lineage, multi-reference)
+- [x] 01-00-PLAN.md — Wave-0 supply-chain gate: a human decide-or-stop on vendoring `mime_guess` 2.0.5 and `unicase` 2.10.0, before the `multipart` feature pulls them in
+- [x] 01-01-PLAN.md — Walking skeleton: `imagai edit` from an explicit path (multipart + chat transports, capability gate, `-edit` filename, PNG lineage, multi-reference)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 01-02-PLAN.md — EDIT-02: pick the newest `output_dir` image when `--image` is omitted; one shared `list_output_images` helper for CLI and web
+- [x] 01-02-PLAN.md — EDIT-02: pick the newest `output_dir` image when `--image` is omitted; one shared `list_output_images` helper for CLI and web
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 01-03-PLAN.md — Web parity: `POST /api/edit` with the output_dir filename guard, plus the browser edit form with source/reference pickers
-- [ ] 01-04-PLAN.md — TUI parity: Edit tab with its own row table, source picker overlay, and the first unit tests in `src/tui.rs`
+- [x] 01-03-PLAN.md — Web parity: `POST /api/edit` with the output_dir filename guard, plus the browser edit form with source/reference pickers
+- [x] 01-04-PLAN.md — TUI parity: Edit tab with its own row table, source picker overlay, and the first unit tests in `src/tui.rs`
 
 **Wave structure:** 01-00 (w0) → 01-01 (w1) → 01-02 (w2) → 01-03 ∥ 01-04 (w3)
 `01-00` is the phase's supply-chain gate. `01-01` declares `depends_on: [01-00]`, which transitively holds `01-02`, `01-03` and `01-04` until the human answers. Its single task is a `checkpoint:decision` with `gate="blocking-human"` — the combination that survives this project's `human_verify_mode: end-of-phase` and still refuses auto-selection in auto mode. `01-01` Task 1 also carries a `<precondition>` asserting the decision was recorded, as a second layer behind the `depends_on` edge. `01-03` and `01-04` share wave 3 because they touch disjoint files.
