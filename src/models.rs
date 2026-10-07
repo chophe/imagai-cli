@@ -18,6 +18,13 @@ pub struct ImageGenerationRequest {
     pub verbose: bool,
     pub auto_filename: bool,
     pub random_filename: bool,
+    /// Path to the single image being edited. `Some` means this is an edit
+    /// request rather than a text-to-image generation; the output filename and
+    /// the PNG `Source` lineage both derive from it.
+    pub source_image: Option<String>,
+    /// Additional reference images, in the order the user supplied them.
+    /// Transmitted after the source; never reordered or deduplicated.
+    pub ref_images: Vec<String>,
 }
 
 impl Default for ImageGenerationRequest {
@@ -35,6 +42,8 @@ impl Default for ImageGenerationRequest {
             verbose: false,
             auto_filename: false,
             random_filename: false,
+            source_image: None,
+            ref_images: Vec::new(),
         }
     }
 }
@@ -190,5 +199,7 @@ mod tests {
         assert_eq!(req.style, "vivid");
         assert_eq!(req.n, 1);
         assert_eq!(req.response_format, "b64_json");
+        assert!(req.source_image.is_none());
+        assert!(req.ref_images.is_empty());
     }
 }

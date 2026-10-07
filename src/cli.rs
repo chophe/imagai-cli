@@ -23,6 +23,8 @@ pub struct Cli {
 pub enum Commands {
     /// Generate images from a text prompt
     Generate(Box<GenerateArgs>),
+    /// Edit an existing image with a change instruction
+    Edit(Box<EditArgs>),
     /// List configured engines (optionally fetch available models)
     ListEngines {
         /// Query each engine and list ALL returned models (without this, only image-generation models are shown)
@@ -120,13 +122,64 @@ pub struct GenerateArgs {
     pub verbose: bool,
 }
 
+#[derive(Args, Clone)]
+pub struct EditArgs {
+    /// Path to the image to edit.
+    #[arg(long)]
+    pub image: Option<String>,
+
+    /// Additional reference image. Repeat for more than one.
+    #[arg(long = "ref")]
+    pub refs: Vec<String>,
+
+    /// The change to apply to the image (e.g. "make it sunset").
+    #[arg(short, long)]
+    pub prompt: Option<String>,
+
+    /// The image engine to use (e.g., openai_gpt).
+    #[arg(long)]
+    pub engine: Option<String>,
+
+    /// Output filename (e.g., my_edit.png). If omitted, derived from the source.
+    #[arg(short, long)]
+    pub output: Option<String>,
+
+    /// Print the request body sent to the API.
+    #[arg(long)]
+    pub verbose: bool,
+}
+
 pub async fn run(cli: Cli, settings: &Settings) -> anyhow::Result<()> {
     match cli.command {
         Commands::Generate(args) => cmd_generate(&args, settings).await,
+        Commands::Edit(args) => cmd_edit(&args, settings).await,
         Commands::ListEngines { all } => cmd_list_engines(all, settings).await,
         Commands::Tui => crate::tui::run(settings).await,
         Commands::Web(args) => crate::web::serve(settings.clone(), &args.host, args.port).await,
     }
+}
+
+/// Read a prompt from stdin, stripping ASCII control characters and trimming.
+/// Shared by `generate` and `edit`.
+fn read_prompt_from_stdin() -> anyhow::Result<String> {
+    println!(
+        "{} Enter your prompt. Press Ctrl+D to finish:",
+        "[Prompt]".bold().yellow()
+    );
+    let mut input = String::new();
+    std::io::stdin().read_to_string(&mut input)?;
+    Ok(input
+        .chars()
+        .map(|c| {
+            if (c as u32) < 0x20 || c as u32 == 0x7F {
+                ' '
+            } else {
+                c
+            }
+        })
+        .collect::<String>()
+        .trim()
+        .to_string())
 }
 
 async fn cmd_generate(args: &GenerateArgs, settings: &Settings) -> anyhow::Result<()> {
@@ -147,27 +200,7 @@ async fn cmd_generate(args: &GenerateArgs, settings: &Settings) -> anyhow::Resul
     // Resolve prompt (read stdin if not provided).
     let prompt = match &args.prompt {
         Some(p) => p.clone(),
-        None => {
-            println!(
-                "{} Enter your prompt. Press Ctrl+D to finish:",
-                "[Prompt]".bold().yellow()
-            );
-            let mut input = String::new();
-            std::io::stdin().read_to_string(&mut input)?;
-            // Strip ASCII control characters and trim.
-            input
-                .chars()
-                .map(|c| {
-                    if (c as u32) < 0x20 || c as u32 == 0x7F {
-                        ' '
-                    } else {
-                        c
-                    }
-                })
-                .collect::<String>()
-                .trim()
-                .to_string()
-        }
+        None => read_prompt_from_stdin()?,
     };
     if prompt.is_empty() {
         eprintln!("{} Prompt cannot be empty.", "[Error]".bold().red());
@@ -227,11 +260,21 @@ async fn cmd_generate(args: &GenerateArgs, settings: &Settings) -> anyhow::Resul
         verbose: args.verbose,
         auto_filename: args.auto_filename,
         random_filename: args.random_filename,
+        // `generate` is a text-to-image path (D-01) — never an edit.
+        source_image: None,
+        ref_images: Vec::new(),
     };
 
     println!("{} Processing...", "[spinner]".bold());
     let results = generate_image_core(&request, settings).await;
 
+    print_edit_results(&results);
+    Ok(())
+}
+
+/// Print per-result outcome. Shared by `generate` and `edit`; the wording is
+/// part of the tested contract (`generated successfully`, `Saved to:`).
+fn print_edit_results(results: &[crate::models::ImageGenerationResponse]) {
     for (i, result) in results.iter().enumerate() {
         if let Some(err) = &result.error {
             eprintln!(
@@ -269,6 +312,99 @@ async fn cmd_generate(args: &GenerateArgs, settings: &Settings) -> anyhow::Resul
             );
         }
         print_usage_cost(result);
+    }
+}
+
+async fn cmd_edit(args: &EditArgs, settings: &Settings) -> anyhow::Result<()> {
+    let selected_engine = args
+        .engine
+        .clone()
+        .or_else(|| settings.default_engine.clone());
+    let Some(selected_engine) = selected_engine else {
+        eprintln!(
+            "{} No engine specified and no default engine configured. Use --engine or set IMAGAI__DEFAULT_ENGINE.",
+            "[Error]".bold().red()
+        );
+        print_available_engines(settings);
+        std::process::exit(1);
+    };
+
+    let prompt = match &args.prompt {
+        Some(p) => p.clone(),
+        None => read_prompt_from_stdin()?,
+    };
+    if prompt.is_empty() {
+        eprintln!("{} Prompt cannot be empty.", "[Error]".bold().red());
+        std::process::exit(1);
+    }
+
+    if settings.get_engine(&selected_engine).is_none() {
+        eprintln!(
+            "{} Engine '{}' is not configured.",
+            "[Error]".bold().red(),
+            selected_engine
+        );
+        print_available_engines(settings);
+        std::process::exit(1);
+    }
+
+    // The auto-pick branch (D-03) lands on this same path in a later plan.
+    let Some(image) = args.image.clone() else {
+        eprintln!(
+            "{} --image is required. Pass the path of the image to edit.",
+            "[Error]".bold().red()
+        );
+        std::process::exit(1);
+    };
+    match std::fs::metadata(&image) {
+        Ok(meta) if meta.is_file() => {}
+        _ => {
+            // `{image:?}` — Debug is byte-safe on a user-supplied path.
+            eprintln!(
+                "{} Source image not found or unreadable: {image:?}",
+                "[Error]".bold().red()
+            );
+            std::process::exit(1);
+        }
+    }
+
+    let engine_config = settings
+        .get_engine(&selected_engine)
+        .expect("engine presence checked above");
+
+    // Capability gate before any request: an engine that cannot take image
+    // input must fail here rather than spend credits (D-05). `?` propagates
+    // through `cli::run` to `main`, which exits non-zero.
+    crate::provider::edit_transport(&selected_engine, engine_config)?;
+
+    println!(
+        "{} Editing image with engine: {}",
+        "🖼️".bright_cyan(),
+        selected_engine.bold().cyan()
+    );
+    println!("{} {}", "📜 Change:".bold(), prompt);
+
+    let request = ImageGenerationRequest {
+        prompt,
+        engine: selected_engine.clone(),
+        output_filename: args.output.clone(),
+        n: 1,
+        verbose: args.verbose,
+        source_image: Some(image),
+        ref_images: args.refs.clone(),
+        ..Default::default()
+    };
+
+    println!("{} Processing...", "[spinner]".bold());
+    let results = generate_image_core(&request, settings).await;
+
+    print_edit_results(&results);
+
+    // A failed edit must not read as success. `cmd_generate` deliberately keeps
+    // its existing exit-0 behaviour (ROB-01, Phase 4); this guard lives only
+    // on the edit path.
+    if results.iter().any(|r| r.error.is_some()) {
+        std::process::exit(1);
     }
     Ok(())
 }

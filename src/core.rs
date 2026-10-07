@@ -24,7 +24,25 @@ pub async fn generate_image_core(
         }];
     };
 
-    let api_responses = provider::generate_images(request, engine_config).await;
+    // An edit request (`source_image` set) goes down the edits transport; every
+    // other request takes the generation path exactly as before.
+    let model = engine_config
+        .model
+        .clone()
+        .unwrap_or_else(|| "dall-e-3".to_string());
+    let api_responses = if request.source_image.is_none() {
+        provider::generate_images(request, engine_config).await
+    } else {
+        // Capability gate first: an incapable engine must fail before a socket
+        // is opened, never after credits are spent.
+        match provider::edit_transport(&request.engine, engine_config) {
+            Ok(_) => provider::generate_edits(request, engine_config, &model).await,
+            Err(e) => vec![ImageGenerationResponse {
+                error: Some(e.to_string()),
+                ..Default::default()
+            }],
+        }
+    };
 
     let mut final_responses = Vec::with_capacity(api_responses.len());
     for (i, mut api_response) in api_responses.into_iter().enumerate() {
@@ -55,6 +73,21 @@ pub async fn generate_image_core(
             } else {
                 base.clone()
             }
+        } else if let Some(source) = request.source_image.as_deref() {
+            // D-06: results land in the same flat output_dir, named after the
+            // source rather than the prompt.
+            let source_path = Path::new(source);
+            output_ext = get_image_extension(source_path);
+            let stem = source_path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("image");
+            let base = format!("{stem}-edit.{output_ext}");
+            if request.n > 1 {
+                suffix_numbered(&base, i, request.n)
+            } else {
+                base
+            }
         } else if request.auto_filename {
             let f = generate_filename_from_prompt_llm(
                 settings,
@@ -75,6 +108,12 @@ pub async fn generate_image_core(
             .model
             .clone()
             .unwrap_or_else(|| "unknown".to_string());
+        // Lineage records the source's filename only — never the path it came from.
+        let source_filename = request
+            .source_image
+            .as_deref()
+            .and_then(|s| Path::new(s).file_name())
+            .and_then(|n| n.to_str());
         let client = match provider::http_client() {
             Ok(c) => c,
             Err(e) => {
@@ -91,6 +130,7 @@ pub async fn generate_image_core(
                 &output_file_path,
                 Some(&request.prompt),
                 Some(&model_name),
+                source_filename,
             )
             .await
             .ok()
@@ -100,6 +140,7 @@ pub async fn generate_image_core(
                 &output_file_path,
                 Some(&request.prompt),
                 Some(&model_name),
+                source_filename,
             )
             .await
             .ok()

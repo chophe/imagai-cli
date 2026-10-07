@@ -3,6 +3,45 @@ use std::path::{Path, PathBuf};
 use crate::config::{EngineConfig, Settings};
 use crate::provider::chat_completion;
 
+/// Image file extensions a saved result can have and a picker can offer.
+///
+/// Single source of truth: `get_image_extension` accepts exactly this set, so
+/// a file the tool can save is a file the tool can pick.
+pub const IMAGE_EXTENSIONS: [&str; 5] = ["png", "jpg", "jpeg", "webp", "gif"];
+
+/// Image files in `dir`, sorted newest-first by mtime.
+///
+/// Ties on equal mtimes break on path so the order is deterministic. Entries
+/// whose metadata cannot be read are skipped.
+pub fn list_output_images(dir: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut found: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
+    for entry in entries.filter_map(|e| e.ok()) {
+        let path = entry.path();
+        let Some(meta) = entry.metadata().ok() else {
+            continue;
+        };
+        if !meta.is_file() {
+            continue;
+        }
+        let is_image = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| IMAGE_EXTENSIONS.contains(&e.to_lowercase().as_str()))
+            .unwrap_or(false);
+        if !is_image {
+            continue;
+        }
+        if let Ok(modified) = meta.modified() {
+            found.push((modified, path));
+        }
+    }
+    found.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    found.into_iter().map(|(_, p)| p).collect()
+}
+
 /// Sanitize a string to be a valid, safe filename.
 pub fn sanitize_filename(name: &str) -> String {
     let mut s: String = name
@@ -179,6 +218,7 @@ pub async fn save_image_from_url(
     output_path: &Path,
     prompt: Option<&str>,
     model: Option<&str>,
+    source: Option<&str>,
 ) -> anyhow::Result<PathBuf> {
     let resp = client.get(url).send().await?;
     let status = resp.status();
@@ -186,7 +226,7 @@ pub async fn save_image_from_url(
         anyhow::bail!("HTTP error downloading image {url}: {status}");
     }
     let bytes = resp.bytes().await?;
-    save_image_bytes(&bytes, output_path, prompt, model)?;
+    save_image_bytes(&bytes, output_path, prompt, model, source)?;
     Ok(output_path.to_path_buf())
 }
 
@@ -196,12 +236,13 @@ pub async fn save_image_from_b64(
     output_path: &Path,
     prompt: Option<&str>,
     model: Option<&str>,
+    source: Option<&str>,
 ) -> anyhow::Result<PathBuf> {
     use base64::Engine;
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(b64.trim())
         .map_err(|e| anyhow::anyhow!("failed to decode base64 image: {e}"))?;
-    save_image_bytes(&bytes, output_path, prompt, model)?;
+    save_image_bytes(&bytes, output_path, prompt, model, source)?;
     Ok(output_path.to_path_buf())
 }
 
@@ -210,6 +251,7 @@ fn save_image_bytes(
     output_path: &Path,
     prompt: Option<&str>,
     model: Option<&str>,
+    source: Option<&str>,
 ) -> anyhow::Result<()> {
     if let Some(parent) = output_path.parent() {
         if !parent.as_os_str().is_empty() {
@@ -219,7 +261,7 @@ fn save_image_bytes(
     let ext = get_image_extension(output_path);
     let final_bytes = if ext == "png" && bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
         if let (Some(p), Some(m)) = (prompt, model) {
-            inject_png_metadata(bytes, p, m)
+            inject_png_metadata(bytes, p, m, source)
         } else {
             bytes.to_vec()
         }
@@ -231,7 +273,18 @@ fn save_image_bytes(
 }
 
 /// Inject `Prompt` and `Model` as tEXt chunks into a PNG byte stream.
-pub fn inject_png_metadata(bytes: &[u8], prompt: &str, model: &str) -> Vec<u8> {
+///
+/// When `source` is `Some`, a third `Source` chunk records the filename the
+/// result was edited from. PNG tEXt is Latin-1, so the value is mapped
+/// lossily first and the chunk is skipped entirely when nothing is
+/// representable — a chunk whose text is not ISO-8859-1 corrupts every
+/// metadata reader downstream.
+pub fn inject_png_metadata(
+    bytes: &[u8],
+    prompt: &str,
+    model: &str,
+    source: Option<&str>,
+) -> Vec<u8> {
     if bytes.len() < 8 {
         return bytes.to_vec();
     }
@@ -244,12 +297,25 @@ pub fn inject_png_metadata(bytes: &[u8], prompt: &str, model: &str) -> Vec<u8> {
             out.extend_from_slice(&bytes[..pos]);
             out.extend_from_slice(&png_text_chunk("Prompt", prompt));
             out.extend_from_slice(&png_text_chunk("Model", model));
+            if let Some(src) = source.map(to_latin1) {
+                if !src.is_empty() {
+                    out.extend_from_slice(&png_text_chunk("Source", &src));
+                }
+            }
             out.extend_from_slice(&bytes[pos..]);
             return out;
         }
         pos += 12 + len;
     }
     bytes.to_vec()
+}
+
+/// Map a string to ISO-8859-1 (Latin-1): code points below 256 pass through,
+/// everything else becomes `?`.
+fn to_latin1(s: &str) -> String {
+    s.chars()
+        .map(|c| if (c as u32) < 256 { c } else { '?' })
+        .collect()
 }
 
 /// Build a single PNG tEXt chunk (keyword, null byte, text, CRC32).
@@ -366,7 +432,7 @@ mod tests {
     #[test]
     fn inject_png_metadata_adds_text_chunks() {
         let png = pixel_png();
-        let out = inject_png_metadata(&png, "my prompt here", "dall-e-3");
+        let out = inject_png_metadata(&png, "my prompt here", "dall-e-3", None);
         assert!(out.len() > png.len());
 
         let chunks = parse_png_chunks(&out);
@@ -394,9 +460,79 @@ mod tests {
     }
 
     #[test]
+    fn inject_png_metadata_adds_source_lineage() {
+        let png = pixel_png();
+        let out = inject_png_metadata(&png, "make it sunset", "gpt-image-1", Some("cat.png"));
+
+        let chunks = parse_png_chunks(&out);
+        let texts: Vec<&(String, Vec<u8>, bool)> =
+            chunks.iter().filter(|(t, _, _)| t == "tEXt").collect();
+        assert_eq!(texts.len(), 3, "Prompt + Model + Source tEXt chunks");
+
+        let keywords: Vec<&[u8]> = texts
+            .iter()
+            .map(|(_, data, _)| {
+                let idx = data.iter().position(|&b| b == 0).unwrap();
+                &data[..idx]
+            })
+            .collect();
+        assert_eq!(keywords[0], b"Prompt");
+        assert_eq!(keywords[1], b"Model");
+        assert_eq!(keywords[2], b"Source");
+
+        let source_chunk = &texts[2].1;
+        let idx = source_chunk.iter().position(|&b| b == 0).unwrap();
+        assert_eq!(&source_chunk[idx + 1..], b"cat.png", "filename only");
+
+        assert!(chunks.iter().all(|(_, _, ok)| *ok), "every CRC valid");
+        assert_eq!(chunks.last().unwrap().0, "IEND", "IEND still last");
+    }
+
+    #[test]
+    fn inject_png_metadata_skips_unrepresentable_source() {
+        let png = pixel_png();
+        // Non-Latin-1 text maps to '?'; an all-unrepresentable value yields no
+        // chunk rather than a corrupt one.
+        let out = inject_png_metadata(&png, "p", "m", Some("\u{4f60}\u{597d}.png"));
+        let texts = parse_png_chunks(&out)
+            .into_iter()
+            .filter(|(t, _, _)| t == "tEXt")
+            .count();
+        assert_eq!(texts, 3, "Source present after lossy mapping");
+    }
+
+    #[test]
+    fn list_output_images_is_newest_first_and_extension_filtered() {
+        // `tempfile` is a dev-dependency and unavailable to lib unit tests, so
+        // this builds its own scratch dir under the system temp root.
+        let root = std::env::temp_dir().join(format!("imagai-list-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("old.png"), b"x").unwrap();
+        std::fs::write(root.join("new.png"), b"x").unwrap();
+        std::fs::write(root.join("notes.txt"), b"x").unwrap();
+        std::fs::create_dir(root.join("nested.png")).unwrap();
+
+        // Force a distinct mtime ordering rather than relying on write timing.
+        let past = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        std::fs::File::options()
+            .write(true)
+            .open(root.join("old.png"))
+            .unwrap()
+            .set_modified(past)
+            .unwrap();
+
+        let found: Vec<String> = list_output_images(&root)
+            .into_iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(found, vec!["new.png", "old.png"], "newest first");
+    }
+
+    #[test]
     fn inject_png_metadata_leaves_non_png_untouched() {
         let junk = b"not a png at all".to_vec();
-        assert_eq!(inject_png_metadata(&junk, "p", "m"), junk);
+        assert_eq!(inject_png_metadata(&junk, "p", "m", None), junk);
     }
 
     #[test]

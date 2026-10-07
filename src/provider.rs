@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::Path;
 
 use serde_json::{json, Value};
 
@@ -115,6 +116,67 @@ pub async fn chat_completion(
     Ok(parsed)
 }
 
+/// Which wire shape an edit request must use for a given engine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditTransport {
+    /// `POST {base}/images/edits` as `multipart/form-data`.
+    MultipartEdits,
+    /// `POST {base}/chat/completions` with `image_url` content parts.
+    ChatVision,
+}
+
+/// Decide how an edit request should be sent, before any socket is opened.
+///
+/// Takes the engine *name* as well as its config so a failure can identify the
+/// engine from the message alone (D-05). Deliberately does not consult
+/// `crate::cli::is_image_model`: that heuristic is display-only and `dall-e-3`
+/// passes it while still being unable to take image input.
+pub fn edit_transport(name: &str, cfg: &EngineConfig) -> anyhow::Result<EditTransport> {
+    let model = cfg.model.clone().unwrap_or_else(|| "dall-e-3".to_string());
+    let is_openrouter = cfg
+        .base_url
+        .as_deref()
+        .map(|u| u.contains("openrouter.ai"))
+        .unwrap_or(false);
+
+    if is_openrouter {
+        return Ok(EditTransport::ChatVision);
+    }
+    if model.to_lowercase().contains("gpt-image") {
+        return Ok(EditTransport::MultipartEdits);
+    }
+    anyhow::bail!(
+        "Engine '{name}' (model '{model}') cannot accept image input for edits. \
+         Set IMAGAI__ENGINES__<NAME>__MODEL to a gpt-image model, or point BASE_URL at an \
+         OpenRouter vision engine."
+    )
+}
+
+/// MIME type for an image path's extension, defaulting to PNG.
+fn image_mime_for(path: &Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_lowercase())
+        .as_deref()
+    {
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("webp") => "image/webp",
+        _ => "image/png",
+    }
+}
+
+/// The ordered image list an edit request carries: the source first, then the
+/// user's references in the order given. Never sorted or deduplicated —
+/// reordering changes what the model is being asked to blend, and silently
+/// dropping a duplicate hides a user mistake.
+fn edit_image_paths(request: &ImageGenerationRequest) -> Vec<&str> {
+    std::iter::once(request.source_image.as_deref())
+        .flatten()
+        .chain(request.ref_images.iter().map(|p| p.as_str()))
+        .collect()
+}
+
 /// Generate images using the OpenAI-compatible images API (with special-casing
 /// for OpenRouter chat-based models and Stability-style extra params).
 pub async fn generate_images(
@@ -167,6 +229,189 @@ pub async fn generate_images(
         .post(&url)
         .bearer_auth(&config.api_key)
         .json(&body)
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            return vec![ImageGenerationResponse {
+                error: Some(format!("request error: {e}")),
+                ..Default::default()
+            }]
+        }
+    };
+    let status = resp.status();
+    let text = match resp.text().await {
+        Ok(t) => t,
+        Err(e) => {
+            return vec![ImageGenerationResponse {
+                error: Some(format!("failed reading response: {e}")),
+                ..Default::default()
+            }]
+        }
+    };
+
+    if !status.is_success() {
+        let msg = extract_api_error(&text)
+            .unwrap_or_else(|| format!("HTTP {status}: {}", truncate(&text, 400)));
+        return vec![ImageGenerationResponse {
+            error: Some(msg),
+            ..Default::default()
+        }];
+    }
+
+    let parsed: ImagesResponse = match serde_json::from_str(&text) {
+        Ok(p) => p,
+        Err(e) => {
+            return vec![ImageGenerationResponse {
+                error: Some(format!("failed to parse response: {e}")),
+                ..Default::default()
+            }]
+        }
+    };
+
+    let mut responses = Vec::with_capacity(parsed.data.len());
+    for img in parsed.data {
+        let mut r = ImageGenerationResponse {
+            usage: parsed.usage.clone(),
+            estimated_cost: parsed.estimated_cost.clone(),
+            ..Default::default()
+        };
+        if let Some(url) = img.url {
+            r.image_url = Some(url);
+        } else if let Some(b64) = img.b64_json {
+            r.image_b64_json = Some(b64);
+        } else {
+            r.error = Some("No image data found in API response.".to_string());
+        }
+        responses.push(r);
+    }
+    if responses.is_empty() {
+        responses.push(ImageGenerationResponse {
+            error: Some("API returned no images.".to_string()),
+            ..Default::default()
+        });
+    }
+    responses
+}
+
+/// Edit an existing image by combining it with a change instruction.
+///
+/// Dispatches on [`edit_transport`]: multipart `/images/edits` for gpt-image
+/// engines, chat vision for OpenRouter engines. The multipart form carries
+/// only `model`, `prompt` and the `image[]` parts — `quality`, `style`,
+/// `response_format` and `n` belong to `/images/generations` and are rejected
+/// by the edits endpoint.
+pub async fn generate_edits(
+    request: &ImageGenerationRequest,
+    config: &EngineConfig,
+    model: &str,
+) -> Vec<ImageGenerationResponse> {
+    let transport = match edit_transport(&request.engine, config) {
+        Ok(t) => t,
+        Err(e) => {
+            return vec![ImageGenerationResponse {
+                error: Some(e.to_string()),
+                ..Default::default()
+            }]
+        }
+    };
+
+    if matches!(transport, EditTransport::ChatVision) {
+        return match openrouter_chat_generate(request, config, model).await {
+            Ok(resp) => vec![resp],
+            Err(e) => vec![ImageGenerationResponse {
+                error: Some(e.to_string()),
+                ..Default::default()
+            }],
+        };
+    }
+
+    // A missing source is an error, never a refs-only request.
+    let Some(source) = request.source_image.as_deref() else {
+        return vec![ImageGenerationResponse {
+            error: Some("An edit request requires a source image.".to_string()),
+            ..Default::default()
+        }];
+    };
+
+    let paths = edit_image_paths(request);
+
+    // Hard failure rather than truncation: dropping references without saying
+    // so would hand the model a different request than the user asked for.
+    const MAX_IMAGES: usize = 16;
+    if paths.len() > MAX_IMAGES {
+        return vec![ImageGenerationResponse {
+            error: Some(format!(
+                "edit request carries {} images but the provider accepts at most {MAX_IMAGES} \
+                 (1 source + {} references); 1 source and {} references were given",
+                paths.len(),
+                MAX_IMAGES - 1,
+                request.ref_images.len()
+            )),
+            ..Default::default()
+        }];
+    }
+
+    let client = match http_client() {
+        Ok(c) => c,
+        Err(e) => {
+            return vec![ImageGenerationResponse {
+                error: Some(e.to_string()),
+                ..Default::default()
+            }]
+        }
+    };
+
+    let mut form = reqwest::multipart::Form::new()
+        .text("model", model.to_string())
+        .text("prompt", request.prompt.clone());
+
+    for path in &paths {
+        // `{path:?}` — Debug for Path is byte-safe, unlike `truncate`.
+        let bytes = match std::fs::read(path) {
+            Ok(b) => b,
+            Err(e) => {
+                return vec![ImageGenerationResponse {
+                    error: Some(format!("failed to read source image {path:?}: {e}")),
+                    ..Default::default()
+                }]
+            }
+        };
+        let p = Path::new(path);
+        let name = p
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("image.png");
+        let part = match reqwest::multipart::Part::bytes(bytes)
+            .file_name(name.to_string())
+            .mime_str(image_mime_for(p))
+        {
+            Ok(part) => part,
+            Err(e) => {
+                return vec![ImageGenerationResponse {
+                    error: Some(format!("failed to build image part for {path:?}: {e}")),
+                    ..Default::default()
+                }]
+            }
+        };
+        form = form.part("image[]".to_string(), part);
+    }
+
+    if request.verbose {
+        // Never the image bytes — filenames only.
+        eprintln!("--- Edit Request ---");
+        eprintln!("model: {model}");
+        eprintln!("source: {source}");
+        eprintln!("references: {}", request.ref_images.len());
+        eprintln!("--------------------");
+    }
+
+    let url = resolve_url(&config.base_url, "images/edits");
+    let resp = match client
+        .post(&url)
+        .bearer_auth(&config.api_key)
+        .multipart(form)
         .send()
         .await
     {
@@ -308,6 +553,21 @@ async fn openrouter_chat_generate(
     }
 
     let mut content_items: Vec<Value> = vec![json!({"type": "text", "text": request.prompt})];
+    // Edit path: source first, then references, as data URIs. A local file has
+    // no reachable URL, and a raw filesystem path must never enter a content part.
+    for path in edit_image_paths(request) {
+        match std::fs::read(path) {
+            Ok(bytes) => {
+                use base64::Engine;
+                let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
+                let uri = format!("data:{};base64,{b64}", image_mime_for(Path::new(path)));
+                content_items.push(json!({"type": "image_url", "image_url": {"url": uri}}));
+            }
+            Err(e) => {
+                return Err(anyhow::anyhow!("failed to read source image {path:?}: {e}"));
+            }
+        }
+    }
     if let Some(img_url) = request
         .extra_params
         .get("image_url")
@@ -469,6 +729,8 @@ mod tests {
             auto_filename: false,
             random_filename: false,
             output_filename: None,
+            source_image: None,
+            ref_images: Vec::new(),
         }
     }
 

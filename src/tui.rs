@@ -319,6 +319,10 @@ impl App {
             verbose: self.verbose,
             auto_filename: self.auto_filename,
             random_filename: self.random_filename,
+            // Edit behaviour arrives with plan 01-04; the fields exist so the
+            // crate compiles against the shared DTO.
+            source_image: None,
+            ref_images: Vec::new(),
         })
     }
 

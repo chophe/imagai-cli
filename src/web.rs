@@ -14,9 +14,9 @@ use tower_http::cors::{Any, CorsLayer};
 use crate::config::Settings;
 use crate::core::generate_image_core;
 use crate::models::ImageGenerationRequest;
+use crate::utils::IMAGE_EXTENSIONS;
 
 const WEB_INTERFACE_HTML: &str = include_str!("../web_interface.html");
-const IMAGE_EXTENSIONS: [&str; 4] = ["png", "jpg", "jpeg", "webp"];
 
 #[derive(Clone)]
 struct AppState {
@@ -191,6 +191,10 @@ async fn generate(State(state): State<AppState>, Json(payload): Json<GeneratePay
         verbose: payload.verbose,
         auto_filename: payload.auto_filename,
         random_filename: payload.random_filename,
+        // Edit behaviour arrives with plan 01-03; the fields exist so the
+        // crate compiles against the shared DTO.
+        source_image: None,
+        ref_images: Vec::new(),
     };
 
     let results = generate_image_core(&request, &state.settings).await;
