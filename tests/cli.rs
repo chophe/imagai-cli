@@ -441,16 +441,53 @@ async fn edit_missing_source_file_fails() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn edit_without_image_fails_before_auto_pick_lands() {
+async fn edit_without_image_uses_most_recent_output() {
     let mock = MockServer::start().await;
     let out = TempDir::new().unwrap();
+    let out_path = out.path().to_path_buf();
+    seed_source_png(out.path(), "older.png");
+    seed_source_png(out.path(), "newer.png");
+
+    // D-03: mtime decides which image is "most recent". Force the two files
+    // apart deterministically instead of sleeping — a sleep-based fixture is
+    // both slow and flaky on a coarse filesystem tick.
+    let now = std::time::SystemTime::now();
+    for (name, offset) in [("older.png", -60i64), ("newer.png", 60i64)] {
+        std::fs::File::options()
+            .write(true)
+            .open(out.path().join(name))
+            .unwrap()
+            .set_modified(now + std::time::Duration::from_secs(offset.unsigned_abs()))
+            .unwrap();
+    }
 
     cmd_edit(&mock, out.path())
         .args(["edit", "-p", "make it sunset"])
         .assert()
-        .failure()
-        .code(1)
-        .stderr(predicate::str::contains("--image"));
+        .success()
+        // The pick must be visible: a silent pick edits a file the user never
+        // named (T-01-07).
+        .stdout(predicate::str::contains("Using most recent image"))
+        .stdout(predicate::str::contains("newer.png"));
+
+    // D-06: the saved name derives from the auto-picked source.
+    assert!(
+        out_path.join("newer-edit.png").exists(),
+        "newer-edit.png written"
+    );
+
+    let edits = mock
+        .requests()
+        .into_iter()
+        .filter(|(p, _)| p.contains("images/edits"))
+        .count();
+    assert_eq!(edits, 1, "exactly one edits request");
+    let raw = mock.raw_requests_for("images/edits");
+    assert_eq!(raw.len(), 1);
+    assert!(
+        raw[0].windows(7).any(|w| w == b"image[]"),
+        "multipart body carries an image[] part name"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
