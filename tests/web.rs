@@ -287,3 +287,58 @@ async fn generate_cli_runs_valid_command() {
     assert!(value["stderr"].is_string());
     assert!(value.get("returncode").is_some());
 }
+
+// ---------------------------------------------------------------- edits
+
+/// Write a 1x1 PNG to `dir/name` and return its path.
+fn seed_source_png(dir: &Path, name: &str) -> std::path::PathBuf {
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(common::PIXEL_PNG_B64)
+        .expect("decode PIXEL_PNG_B64");
+    let path = dir.join(name);
+    std::fs::write(&path, bytes).expect("seed source png");
+    path
+}
+
+/// Same crate defaults `cmd_edit` uses, but with an edit-capable model:
+/// `dall-e-3` cannot take image input, so the default fixture would exercise
+/// the capability bail instead of the happy path.
+fn edit_capable_settings(mock: &MockServer, out_dir: &Path) -> Settings {
+    let mut settings = test_settings(mock, out_dir);
+    settings.engines.get_mut("mock").expect("mock engine").model =
+        Some("gpt-image-1".to_string());
+    settings
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn edit_endpoint_saves_edited_image() {
+    let mock = MockServer::start().await;
+    let out = TempDir::new().unwrap();
+    seed_source_png(out.path(), "source.png");
+    let app = web::router(edit_capable_settings(&mock, out.path()));
+
+    let payload = json!({"prompt": "make it sunset", "source": "source.png"});
+    let (status, value) = post_json(app, "/api/edit", &payload).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(value["success"], true);
+    let result = &value["results"][0];
+    assert_eq!(result["success"], true);
+    let saved_path = result["saved_path"].as_str().expect("saved_path");
+    assert!(
+        saved_path.ends_with("source-edit.png"),
+        "saved as source-derived name: {saved_path}"
+    );
+    let image_data = result["image_data"].as_str().expect("base64 preview");
+    assert!(image_data.starts_with("data:image/png;base64,"));
+    assert!(Path::new(saved_path).is_file(), "file exists on disk");
+
+    // The saved PNG carries the Source lineage chunk naming the source file.
+    let saved_bytes = std::fs::read(saved_path).expect("read saved png");
+    let saved_text = String::from_utf8_lossy(&saved_bytes);
+    assert!(saved_text.contains("source.png"));
+
+    // One edits request, zero generations: the shared core took the edit path.
+    assert_eq!(mock.requests_for("/v1/images/edits").len(), 1);
+    assert_eq!(mock.requests_for("/v1/images/generations").len(), 0);
+}

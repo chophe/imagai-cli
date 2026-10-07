@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -13,7 +13,7 @@ use tower_http::cors::{Any, CorsLayer};
 
 use crate::config::Settings;
 use crate::core::generate_image_core;
-use crate::models::ImageGenerationRequest;
+use crate::models::{ImageGenerationRequest, ImageGenerationResponse};
 
 const WEB_INTERFACE_HTML: &str = include_str!("../web_interface.html");
 
@@ -67,6 +67,24 @@ struct CliPayload {
     command: String,
 }
 
+/// Payload for `POST /api/edit`. The source and references are filenames
+/// already inside `output_dir`, chosen from the gallery — never filesystem
+/// paths and never uploads (D-03, D-04). `refs` is a JSON array.
+#[derive(Deserialize)]
+struct EditPayload {
+    prompt: String,
+    #[serde(default)]
+    engine: Option<String>,
+    #[serde(default)]
+    source: Option<String>,
+    #[serde(default)]
+    refs: Vec<String>,
+    #[serde(default)]
+    output: Option<String>,
+    #[serde(default)]
+    verbose: bool,
+}
+
 fn default_one() -> u32 {
     1
 }
@@ -96,6 +114,7 @@ pub fn router(settings: Settings) -> Router {
         .route("/", get(index))
         .route("/api/engines", get(list_engines))
         .route("/api/generate", post(generate))
+        .route("/api/edit", post(edit))
         .route("/api/generate-cli", post(generate_cli))
         .route("/api/images", get(list_images))
         .route("/api/images/{filename}", get(serve_image))
@@ -198,6 +217,33 @@ async fn generate(State(state): State<AppState>, Json(payload): Json<GeneratePay
 
     let results = generate_image_core(&request, &state.settings).await;
 
+    let result_items = result_items_json(&results);
+
+    Json(json!({
+        "success": true,
+        "results": result_items,
+        "command": "Generated using core engine",
+    }))
+    .into_response()
+}
+
+/// Reduce a client-supplied filename to its final component and join it
+/// under `dir`. That reduction is the traversal guard — the same call
+/// `serve_image` makes — so `../../.env` becomes `.env` inside `output_dir`
+/// rather than a path out of it. Returns `None` when the value has no usable
+/// final component.
+fn output_dir_file(dir: &Path, raw: &str) -> Option<PathBuf> {
+    Path::new(raw)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|name| dir.join(name))
+}
+
+/// Shared per-result JSON shape for `/api/generate` and `/api/edit`, so the
+/// two endpoints cannot drift apart on `index`, `success`, `error`,
+/// `saved_path`, `image_data`, `image_url`, `image_b64_json` or
+/// `text_content`.
+fn result_items_json(results: &[ImageGenerationResponse]) -> Vec<Value> {
     let mut result_items = Vec::new();
     for (i, result) in results.iter().enumerate() {
         let mut item = json!({
@@ -228,11 +274,129 @@ async fn generate(State(state): State<AppState>, Json(payload): Json<GeneratePay
         }
         result_items.push(item);
     }
+    result_items
+}
+
+async fn edit(State(state): State<AppState>, Json(payload): Json<EditPayload>) -> Response {
+    // Engine resolution mirrors `generate` exactly: an explicit engine, then
+    // the default, then the same `success: false` envelopes — never a 400.
+    let engine = payload
+        .engine
+        .clone()
+        .or_else(|| state.settings.default_engine.clone());
+    let Some(engine) = engine else {
+        return Json(json!({
+            "success": false,
+            "error": "No engine specified and no default engine configured",
+        }))
+        .into_response();
+    };
+
+    if state.settings.get_engine(&engine).is_none() {
+        return Json(json!({
+            "success": false,
+            "error": format!("Engine \"{engine}\" is not configured"),
+        }))
+        .into_response();
+    }
+
+    // Filename resolution before anything else touches the filesystem. Every
+    // path-shaped field goes through `output_dir_file`; a raw payload string
+    // is never joined directly.
+    let dir = &state.settings.output_dir;
+    let source_path = match payload.source.as_deref() {
+        Some(raw) => {
+            let Some(path) = output_dir_file(dir, raw) else {
+                return Json(json!({
+                    "success": false,
+                    "error": format!("Source image '{raw}' not found in output_dir"),
+                }))
+                .into_response();
+            };
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(raw);
+            if !path.is_file() {
+                return Json(json!({
+                    "success": false,
+                    "error": format!("Source image '{name}' not found in output_dir"),
+                }))
+                .into_response();
+            }
+            path
+        }
+        // No source named: the same newest-image behaviour the CLI has (D-03).
+        None => {
+            let Some(picked) = crate::utils::list_output_images(dir).into_iter().next() else {
+                return Json(json!({
+                    "success": false,
+                    "error": "No images found in output_dir — generate an image first, or choose a source.",
+                }))
+                .into_response();
+            };
+            picked
+        }
+    };
+
+    let mut ref_paths = Vec::with_capacity(payload.refs.len());
+    for raw in &payload.refs {
+        let Some(path) = output_dir_file(dir, raw) else {
+            return Json(json!({
+                "success": false,
+                "error": format!("Reference image '{raw}' not found in output_dir"),
+            }))
+            .into_response();
+        };
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or(raw);
+        if !path.is_file() {
+            return Json(json!({
+                "success": false,
+                "error": format!("Reference image '{name}' not found in output_dir"),
+            }))
+            .into_response();
+        }
+        ref_paths.push(path);
+    }
+
+    // `generate_image_core` joins the output name onto `output_dir` without
+    // reducing it, so the reduced filename — not the raw payload string — is
+    // what crosses into the core. An unresolvable value falls back to the
+    // source-derived name, exactly as if no output had been given.
+    let output_filename = payload
+        .output
+        .as_deref()
+        .and_then(|raw| output_dir_file(dir, raw))
+        .and_then(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .map(|s| s.to_string())
+        });
+
+    // The same `ImageGenerationRequest` the CLI builds: source plus refs in
+    // payload order, `n: 1`, and the crate defaults for the generation knobs
+    // `cmd_edit` leaves at their defaults. No `extra_params` — the Stability
+    // and OpenRouter generation knobs have no meaning on an edit request.
+    let request = ImageGenerationRequest {
+        prompt: payload.prompt,
+        engine,
+        output_filename,
+        n: 1,
+        verbose: payload.verbose,
+        source_image: Some(source_path.to_string_lossy().to_string()),
+        ref_images: ref_paths
+            .iter()
+            .map(|p| p.to_string_lossy().to_string())
+            .collect(),
+        ..Default::default()
+    };
+
+    let results = generate_image_core(&request, &state.settings).await;
 
     Json(json!({
         "success": true,
-        "results": result_items,
-        "command": "Generated using core engine",
+        "results": result_items_json(&results),
+        "command": "Edited image using core engine",
     }))
     .into_response()
 }
