@@ -27,7 +27,14 @@ const ROW_RANDOM: usize = 8;
 const ROW_VERBOSE: usize = 9;
 const ROW_SUBMIT: usize = 10;
 
-const TABS: [&str; 3] = ["Generate", "Engines", "About"];
+const EDIT_ROWS: usize = 5;
+const EDIT_ROW_SOURCE: usize = 0;
+const EDIT_ROW_PROMPT: usize = 1;
+const EDIT_ROW_ENGINE: usize = 2;
+const EDIT_ROW_OUTPUT: usize = 3;
+const EDIT_ROW_SUBMIT: usize = 4;
+
+const TABS: [&str; 4] = ["Generate", "Edit", "Engines", "About"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LogKind {
@@ -112,6 +119,9 @@ struct App {
     focus: usize,
     editing: Option<usize>,
     editor: Editor,
+    edit_focus: usize,
+    edit_editing: Option<usize>,
+    edit_refs_editing: bool,
 
     prompt: String,
     engine: String,
@@ -123,6 +133,11 @@ struct App {
     auto_filename: bool,
     random_filename: bool,
     verbose: bool,
+    edit_prompt: String,
+    edit_source: String,
+    edit_engine: String,
+    edit_output: String,
+    edit_refs: String,
 
     logs: Vec<LogLine>,
     generating: bool,
@@ -145,6 +160,9 @@ impl App {
             focus: ROW_PROMPT,
             editing: None,
             editor: Editor::default(),
+            edit_focus: EDIT_ROW_SOURCE,
+            edit_editing: None,
+            edit_refs_editing: false,
             prompt: String::new(),
             engine: settings.default_engine.clone().unwrap_or_default(),
             size: "1024x1024".to_string(),
@@ -155,6 +173,11 @@ impl App {
             auto_filename: false,
             random_filename: false,
             verbose: false,
+            edit_prompt: String::new(),
+            edit_source: String::new(),
+            edit_engine: settings.default_engine.clone().unwrap_or_default(),
+            edit_output: String::new(),
+            edit_refs: String::new(),
             logs: Vec::new(),
             generating: false,
             rx: None,
@@ -232,6 +255,37 @@ impl App {
             ROW_RANDOM => "Random-filename",
             ROW_VERBOSE => "Verbose",
             ROW_SUBMIT => "Generate",
+            _ => "",
+        }
+    }
+
+    fn edit_text_field(&self, row: usize) -> &str {
+        match row {
+            EDIT_ROW_SOURCE => &self.edit_source,
+            EDIT_ROW_PROMPT => &self.edit_prompt,
+            EDIT_ROW_ENGINE => &self.edit_engine,
+            EDIT_ROW_OUTPUT => &self.edit_output,
+            _ => "",
+        }
+    }
+
+    fn edit_text_field_mut(&mut self, row: usize) -> &mut String {
+        match row {
+            EDIT_ROW_SOURCE => &mut self.edit_source,
+            EDIT_ROW_PROMPT => &mut self.edit_prompt,
+            EDIT_ROW_ENGINE => &mut self.edit_engine,
+            EDIT_ROW_OUTPUT => &mut self.edit_output,
+            _ => unreachable!(),
+        }
+    }
+
+    fn edit_row_label(row: usize) -> &'static str {
+        match row {
+            EDIT_ROW_SOURCE => "Source",
+            EDIT_ROW_PROMPT => "Change",
+            EDIT_ROW_ENGINE => "Engine",
+            EDIT_ROW_OUTPUT => "Output",
+            EDIT_ROW_SUBMIT => "Edit",
             _ => "",
         }
     }
@@ -326,6 +380,157 @@ impl App {
         })
     }
 
+    fn start_edit(&mut self) {
+        if self.generating {
+            self.status = "Already generating...".to_string();
+            return;
+        }
+        let Some(request) = self.build_edit_request() else {
+            return;
+        };
+        let settings = self.settings.clone();
+        let (tx, rx) = mpsc::unbounded_channel();
+        self.rx = Some(rx);
+        self.generating = true;
+        let source = request.source_image.clone().unwrap_or_default();
+        self.status = format!("Editing with engine '{}'…", request.engine);
+        self.push_log(
+            LogKind::Info,
+            format!(
+                "🎨 Editing with engine '{}' from source '{source}'…",
+                request.engine
+            ),
+        );
+        tokio::spawn(async move {
+            let results = generate_image_core(&request, &settings).await;
+            let _ = tx.send(results);
+        });
+    }
+
+    fn build_edit_request(&mut self) -> Option<ImageGenerationRequest> {
+        let prompt = self.edit_prompt.trim().to_string();
+        if prompt.is_empty() {
+            self.status = "Change instruction cannot be empty".to_string();
+            self.push_log(
+                LogKind::Error,
+                "Change instruction cannot be empty".to_string(),
+            );
+            return None;
+        }
+        let engine = {
+            let e = self.edit_engine.trim().to_string();
+            if e.is_empty() {
+                match &self.settings.default_engine {
+                    Some(d) => d.clone(),
+                    None => {
+                        self.status = "No engine specified and none configured".to_string();
+                        self.push_log(
+                            LogKind::Error,
+                            "No engine specified and no default engine configured.".to_string(),
+                        );
+                        return None;
+                    }
+                }
+            } else {
+                e
+            }
+        };
+        if self.settings.get_engine(&engine).is_none() {
+            let avail = self.settings.engine_names().join(", ");
+            self.status = format!("Engine '{engine}' not configured");
+            self.push_log(
+                LogKind::Error,
+                format!("Engine '{engine}' is not configured. Available: {avail}"),
+            );
+            return None;
+        }
+        let source_image = {
+            let s = self.edit_source.trim().to_string();
+            if s.is_empty() {
+                let picked = crate::utils::list_output_images(&self.settings.output_dir)
+                    .into_iter()
+                    .next();
+                match picked {
+                    Some(p) => {
+                        self.push_log(
+                            LogKind::Info,
+                            format!("Using most recent image: {}", p.to_string_lossy()),
+                        );
+                        p
+                    }
+                    None => {
+                        self.status = "No images found in the output directory".to_string();
+                        self.push_log(
+                            LogKind::Error,
+                            "No images found in the output directory — generate one first"
+                                .to_string(),
+                        );
+                        return None;
+                    }
+                }
+            } else {
+                let rel = self.settings.output_dir.join(&s);
+                let candidate = if rel.is_file() {
+                    rel
+                } else {
+                    std::path::PathBuf::from(&s)
+                };
+                if !candidate.is_file() {
+                    self.status = format!("Source image '{s}' not found");
+                    self.push_log(
+                        LogKind::Error,
+                        format!("Source image '{s}' not found or unreadable"),
+                    );
+                    return None;
+                }
+                candidate
+            }
+        };
+        let wanted_refs: Vec<String> = self
+            .edit_refs
+            .split(',')
+            .map(|e| e.trim().to_string())
+            .filter(|e| !e.is_empty())
+            .collect();
+        let mut ref_images = Vec::new();
+        for name in wanted_refs {
+            let candidate = self.settings.output_dir.join(&name);
+            if std::fs::metadata(&candidate).is_err() {
+                self.status = format!("Reference image '{name}' not found");
+                self.push_log(
+                    LogKind::Error,
+                    format!("Reference image '{name}' not found"),
+                );
+                return None;
+            }
+            ref_images.push(candidate.to_string_lossy().to_string());
+        }
+        let defaults = ImageGenerationRequest::default();
+        Some(ImageGenerationRequest {
+            prompt,
+            engine,
+            output_filename: {
+                let o = self.edit_output.trim().to_string();
+                if o.is_empty() {
+                    None
+                } else {
+                    Some(o)
+                }
+            },
+            size: defaults.size,
+            quality: defaults.quality,
+            n: 1,
+            style: defaults.style,
+            response_format: defaults.response_format,
+            extra_params: HashMap::new(),
+            verbose: false,
+            auto_filename: false,
+            random_filename: false,
+            source_image: Some(source_image.to_string_lossy().to_string()),
+            ref_images,
+        })
+    }
+
     fn drain_messages(&mut self) {
         let mut results: Option<Vec<crate::models::ImageGenerationResponse>> = None;
         if let Some(rx) = &mut self.rx {
@@ -366,6 +571,9 @@ impl App {
     // ---- event handling ----
 
     fn handle_key(&mut self, code: KeyCode) -> bool {
+        if self.tab == 1 {
+            return self.handle_edit_key(code);
+        }
         // Quit always available.
         if code == KeyCode::Char('q') && self.editing.is_none() {
             return true;
@@ -456,6 +664,115 @@ impl App {
         }
     }
 
+    fn handle_edit_key(&mut self, code: KeyCode) -> bool {
+        if let Some(row) = self.edit_editing {
+            match code {
+                KeyCode::Esc => {
+                    self.commit_edit_field(row);
+                    self.edit_editing = None;
+                }
+                KeyCode::Enter => {
+                    self.commit_edit_field(row);
+                    self.edit_editing = None;
+                    self.edit_focus = (self.edit_focus + 1) % EDIT_ROWS;
+                }
+                KeyCode::Left => self.editor.move_left(),
+                KeyCode::Right => self.editor.move_right(),
+                KeyCode::Home => self.editor.cursor = 0,
+                KeyCode::End => self.editor.cursor = self.editor.content.len(),
+                KeyCode::Backspace => self.editor.backspace(),
+                KeyCode::Delete => self.editor.delete(),
+                KeyCode::Char(c) => self.editor.insert_char(c),
+                _ => {}
+            }
+            return false;
+        }
+        if self.edit_refs_editing {
+            match code {
+                KeyCode::Esc => {
+                    self.edit_refs = self.editor.content.clone();
+                    self.edit_refs_editing = false;
+                }
+                KeyCode::Enter => {
+                    self.edit_refs = self.editor.content.clone();
+                    self.edit_refs_editing = false;
+                }
+                KeyCode::Left => self.editor.move_left(),
+                KeyCode::Right => self.editor.move_right(),
+                KeyCode::Home => self.editor.cursor = 0,
+                KeyCode::End => self.editor.cursor = self.editor.content.len(),
+                KeyCode::Backspace => self.editor.backspace(),
+                KeyCode::Delete => self.editor.delete(),
+                KeyCode::Char(c) => self.editor.insert_char(c),
+                _ => {}
+            }
+            return false;
+        }
+        match code {
+            KeyCode::Char('q') => true,
+            KeyCode::Esc => {
+                self.edit_editing = None;
+                self.edit_refs_editing = false;
+                false
+            }
+            KeyCode::Enter => {
+                if self.edit_focus == EDIT_ROW_SUBMIT {
+                    self.start_edit();
+                } else {
+                    self.begin_edit_field(self.edit_focus);
+                }
+                false
+            }
+            KeyCode::Char(' ') => {
+                if self.edit_focus == EDIT_ROW_SUBMIT {
+                    self.start_edit();
+                }
+                false
+            }
+            KeyCode::Tab => {
+                self.edit_focus = (self.edit_focus + 1) % EDIT_ROWS;
+                false
+            }
+            KeyCode::BackTab => {
+                self.edit_focus = (self.edit_focus + EDIT_ROWS - 1) % EDIT_ROWS;
+                false
+            }
+            KeyCode::Up => {
+                self.edit_focus = (self.edit_focus + EDIT_ROWS - 1) % EDIT_ROWS;
+                false
+            }
+            KeyCode::Down => {
+                self.edit_focus = (self.edit_focus + 1) % EDIT_ROWS;
+                false
+            }
+            KeyCode::Char('k') => {
+                self.edit_focus = (self.edit_focus + EDIT_ROWS - 1) % EDIT_ROWS;
+                false
+            }
+            KeyCode::Char('j') => {
+                self.edit_focus = (self.edit_focus + 1) % EDIT_ROWS;
+                false
+            }
+            KeyCode::Char('r') => {
+                self.editor = Editor::new(&self.edit_refs);
+                self.edit_refs_editing = true;
+                false
+            }
+            _ => false,
+        }
+    }
+
+    fn begin_edit_field(&mut self, row: usize) {
+        self.editor = Editor::new(self.edit_text_field(row));
+        self.edit_editing = Some(row);
+    }
+
+    fn commit_edit_field(&mut self, row: usize) {
+        if self.edit_editing == Some(row) {
+            *self.edit_text_field_mut(row) = self.editor.content.clone();
+        }
+    }
+
     // ---- drawing ----
 
     fn draw(&mut self, frame: &mut Frame) {
@@ -470,7 +787,8 @@ impl App {
         self.draw_header(frame, layout[0]);
         match self.tab {
             0 => self.draw_generate_tab(frame, layout[1]),
-            1 => self.draw_engines_tab(frame, layout[1]),
+            1 => self.draw_edit_tab(frame, layout[1]),
+            2 => self.draw_engines_tab(frame, layout[1]),
             _ => self.draw_about_tab(frame, layout[1]),
         }
         self.draw_footer(frame, layout[2]);
@@ -594,6 +912,124 @@ impl App {
 
         let block = Block::bordered().title(format!(
             " Generate {}",
+            if self.generating {
+                "[working…]".to_string()
+            } else {
+                String::new()
+            }
+        ));
+        frame.render_widget(Paragraph::new(Text::from(lines)).block(block), area);
+    }
+
+    fn draw_edit_tab(&mut self, frame: &mut Frame, area: Rect) {
+        let layout = Layout::horizontal([Constraint::Percentage(55), Constraint::Percentage(45)])
+            .split(area);
+        self.draw_edit_form(frame, layout[0]);
+        self.draw_logs(frame, layout[1]);
+    }
+
+    fn draw_edit_form(&mut self, frame: &mut Frame, area: Rect) {
+        let inner_w = area.width.saturating_sub(2) as usize;
+        let label_w = 16usize;
+        let value_w = inner_w.saturating_sub(label_w + 3).max(1);
+
+        let mut lines: Vec<Line> = Vec::with_capacity(EDIT_ROWS + 3);
+        for row in 0..EDIT_ROWS {
+            let focused = self.edit_focus == row;
+            let editing_here = self.edit_editing == Some(row);
+
+            let label_style = if focused {
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Gray)
+            };
+            let mut spans: Vec<Span> = Vec::new();
+            let label = format!("{:<label_w$}", Self::edit_row_label(row));
+            spans.push(Span::styled(label, label_style));
+            spans.push(Span::raw("  "));
+
+            if row == EDIT_ROW_SUBMIT {
+                let btn = if self.generating {
+                    " [ Working… ] "
+                } else {
+                    " [ Edit ] "
+                };
+                let style = if focused {
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(Color::Green)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::Green)
+                };
+                spans.push(Span::styled(btn, style));
+            } else {
+                // text field
+                let content = if editing_here {
+                    self.editor.content.clone()
+                } else {
+                    self.edit_text_field(row).to_string()
+                };
+                let cursor = if editing_here {
+                    self.editor.cursor
+                } else {
+                    content.len()
+                };
+                let (rendered, rendered_chars) = render_value_line(&content, cursor, editing_here);
+                let pad = value_w.saturating_sub(rendered_chars);
+                let value_style = if focused {
+                    Style::default().fg(Color::White)
+                } else {
+                    Style::default().fg(Color::DarkGray)
+                };
+                for span in rendered.spans {
+                    let mut s = span.clone();
+                    s.style = value_style.patch(s.style);
+                    spans.push(s);
+                }
+                if pad > 0 {
+                    spans.push(Span::styled(" ".repeat(pad), value_style));
+                }
+            }
+
+            lines.push(Line::from(spans));
+        }
+
+        // Reference images have no dedicated focus row: they are shown here
+        // and edited with `r`. The provider receives them in listed order.
+        lines.push(Line::from(""));
+        {
+            let content = if self.edit_refs_editing {
+                self.editor.content.clone()
+            } else {
+                self.edit_refs.clone()
+            };
+            let shown = if !self.edit_refs_editing && content.is_empty() {
+                "(none — press r to add)".to_string()
+            } else {
+                content
+            };
+            let cursor = if self.edit_refs_editing {
+                self.editor.cursor.min(shown.len())
+            } else {
+                shown.len()
+            };
+            let (rendered, _) = render_value_line(&shown, cursor, self.edit_refs_editing);
+            let mut spans = vec![Span::styled(
+                format!("{:<label_w$}", "Refs"),
+                Style::default().fg(Color::Gray),
+            )];
+            spans.push(Span::raw("  "));
+            for span in rendered.spans {
+                spans.push(span.clone());
+            }
+            lines.push(Line::from(spans));
+        }
+
+        let block = Block::bordered().title(format!(
+            " Edit {}",
             if self.generating {
                 "[working…]".to_string()
             } else {
@@ -856,6 +1292,7 @@ impl App {
             )),
             Line::from("  imagai generate -p 'a cat wearing a hat' --engine openai_dalle3"),
             Line::from("  imagai generate -p 'futuristic city' --auto-filename"),
+            Line::from("  imagai edit --image <path> -p \"make it sunset\""),
             Line::from("  imagai list-engines [--all]"),
             Line::from("  imagai tui"),
         ]);
@@ -873,7 +1310,9 @@ impl App {
                         .to_string()
                 }
             }
-            1 => "q Quit | Tab switch tab | f fetch models".to_string(),
+            1 => "q Quit | Tab switch tab | ↑/↓ navigate | Enter edit/Edit | Space toggle"
+                .to_string(),
+            2 => "q Quit | Tab switch tab | f fetch models".to_string(),
             _ => "q Quit | Tab switch tab".to_string(),
         };
         keys.push_str(&format!("   |  {}", self.status));
@@ -939,16 +1378,24 @@ impl App {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     // Tab key switches tabs.
                     let code = key.code;
-                    if code == KeyCode::Tab && self.editing.is_none() {
+                    if code == KeyCode::Tab
+                        && self.editing.is_none()
+                        && self.edit_editing.is_none()
+                        && !self.edit_refs_editing
+                    {
                         self.tab = (self.tab + 1) % TABS.len();
                         continue;
                     }
-                    if code == KeyCode::BackTab && self.editing.is_none() {
+                    if code == KeyCode::BackTab
+                        && self.editing.is_none()
+                        && self.edit_editing.is_none()
+                        && !self.edit_refs_editing
+                    {
                         self.tab = (self.tab + TABS.len() - 1) % TABS.len();
                         continue;
                     }
                     // 'f' fetches models on the engines tab.
-                    if code == KeyCode::Char('f') && self.tab == 1 && self.editing.is_none() {
+                    if code == KeyCode::Char('f') && self.tab == 2 && self.editing.is_none() {
                         self.fetch_models();
                         continue;
                     }
@@ -956,7 +1403,11 @@ impl App {
                         return Ok(());
                     }
                 }
-                Event::Paste(text) if self.editing.is_some() => {
+                Event::Paste(text)
+                    if self.editing.is_some()
+                        || self.edit_editing.is_some()
+                        || self.edit_refs_editing =>
+                {
                     for c in text.chars() {
                         self.editor.insert_char(c);
                     }
@@ -964,5 +1415,46 @@ impl App {
                 _ => {}
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn edit_test_settings(dir: &std::path::Path) -> Settings {
+        Settings {
+            output_dir: dir.to_path_buf(),
+            default_engine: Some("mock".to_string()),
+            engines: HashMap::from([(
+                "mock".to_string(),
+                crate::config::EngineConfig {
+                    api_key: "test".to_string(),
+                    base_url: None,
+                    model: Some("gpt-image-1".to_string()),
+                },
+            )]),
+        }
+    }
+
+    #[test]
+    fn edit_row_table_has_no_unreachable_index() {
+        let tmp = TempDir::new().unwrap();
+        let settings = edit_test_settings(tmp.path());
+        let mut app = App::new(&settings);
+        for row in 0..EDIT_ROWS {
+            assert!(!App::edit_row_label(row).is_empty(), "row {row} has a label");
+            let _ = app.edit_text_field(row);
+        }
+        for row in 0..EDIT_ROW_SUBMIT {
+            let _ = app.edit_text_field_mut(row);
+        }
+    }
+
+    #[test]
+    fn edit_row_labels_name_the_edit_fields() {
+        let labels: Vec<_> = (0..EDIT_ROWS).map(App::edit_row_label).collect();
+        assert_eq!(labels, vec!["Source", "Change", "Engine", "Output", "Edit"]);
     }
 }
