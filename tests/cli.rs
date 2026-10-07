@@ -23,6 +23,26 @@ fn cmd(mock: &MockServer, out_dir: &Path) -> Command {
     c
 }
 
+/// Like [`cmd`] but with an edit-capable model. `cmd` defaults to `dall-e-3`,
+/// which the capability gate rejects — reusing it unmodified would assert the
+/// wrong branch.
+fn cmd_edit(mock: &MockServer, out_dir: &Path) -> Command {
+    let mut c = cmd(mock, out_dir);
+    c.env("IMAGAI__ENGINES__MOCK__MODEL", "gpt-image-1");
+    c
+}
+
+/// Write a 1x1 PNG to `dir/name` and return its path.
+fn seed_source_png(dir: &Path, name: &str) -> PathBuf {
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(common::PIXEL_PNG_B64)
+        .expect("decode PIXEL_PNG_B64");
+    let path = dir.join(name);
+    std::fs::write(&path, bytes).expect("seed source png");
+    path
+}
+
 fn list_pngs(dir: &Path) -> Vec<PathBuf> {
     let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
         .expect("read output dir")
@@ -34,13 +54,17 @@ fn list_pngs(dir: &Path) -> Vec<PathBuf> {
     files
 }
 
-fn png_has_metadata(path: &Path, prompt: &str, model: &str) -> bool {
+fn png_has_metadata(path: &Path, prompt: &str, model: &str, source: Option<&str>) -> bool {
     let Ok(bytes) = std::fs::read(path) else {
         return false;
     };
-    bytes.windows(prompt.len()).any(|w| w == prompt.as_bytes())
+    let base = bytes.windows(prompt.len()).any(|w| w == prompt.as_bytes())
         && bytes.windows(model.len()).any(|w| w == model.as_bytes())
-        && bytes.windows(4).any(|w| w == b"tEXt")
+        && bytes.windows(4).any(|w| w == b"tEXt");
+    match source {
+        Some(s) => base && bytes.windows(s.len()).any(|w| w == s.as_bytes()),
+        None => base,
+    }
 }
 
 // ---------------------------------------------------------------- basics
@@ -131,7 +155,7 @@ async fn generate_saves_b64_image_with_metadata() {
     let files = list_pngs(&out_path);
     assert_eq!(files.len(), 1, "one image saved");
     assert!(
-        png_has_metadata(&files[0], "a red cat", "dall-e-3"),
+        png_has_metadata(&files[0], "a red cat", "dall-e-3", None),
         "saved PNG carries prompt+model tEXt metadata"
     );
 
@@ -311,6 +335,65 @@ async fn generate_openrouter_gemini_text_response() {
         .stdout(predicate::str::contains("here is a textual description"));
 
     assert_eq!(mock.requests_for("/v1/chat/completions").len(), 1);
+}
+
+// ---------------------------------------------------------------- edit
+
+#[tokio::test(flavor = "multi_thread")]
+async fn edit_saves_source_derived_image_with_lineage_metadata() {
+    let mock = MockServer::start().await;
+    let out = TempDir::new().unwrap();
+    let out_path = out.path().to_path_buf();
+    let source = seed_source_png(out.path(), "source.png");
+
+    cmd_edit(&mock, out.path())
+        .args(["edit", "--image"])
+        .arg(&source)
+        .args(["-p", "make it sunset"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("generated successfully"))
+        .stdout(predicate::str::contains("Saved to:"));
+
+    // D-06: filename derives from the source stem, never from the prompt.
+    let saved = out_path.join("source-edit.png");
+    assert!(saved.exists(), "source-edit.png written");
+    assert!(saved.metadata().unwrap().len() > 0);
+
+    // D-07: Prompt, Model and Source lineage, filename only — no output path.
+    assert!(
+        png_has_metadata(&saved, "make it sunset", "gpt-image-1", Some("source.png")),
+        "saved PNG carries prompt+model+source tEXt metadata"
+    );
+    let bytes = std::fs::read(&saved).unwrap();
+    let out_str = out_path.to_string_lossy().to_string();
+    assert!(
+        !bytes
+            .windows(out_str.len())
+            .any(|w| w == out_str.as_bytes()),
+        "output directory path is not written into the PNG"
+    );
+
+    // Multipart POST to /images/edits carrying an `image[]` part.
+    let edits = mock
+        .requests()
+        .into_iter()
+        .filter(|(p, _)| p.contains("images/edits"))
+        .count();
+    assert_eq!(edits, 1, "exactly one edits request");
+    let generations = mock
+        .requests()
+        .into_iter()
+        .filter(|(p, _)| p.contains("images/generations"))
+        .count();
+    assert_eq!(generations, 0, "no generations request on the edit path");
+
+    let raw = mock.raw_requests_for("images/edits");
+    assert_eq!(raw.len(), 1);
+    assert!(
+        raw[0].windows(7).any(|w| w == b"image[]"),
+        "multipart body carries an image[] part name"
+    );
 }
 
 // ---------------------------------------------------------------- errors

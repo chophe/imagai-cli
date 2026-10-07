@@ -35,12 +35,18 @@ pub enum ChatMode {
     Image,
 }
 
+/// Raw request bytes captured per path, for multipart wire-format assertions.
+type RawCaptured = Arc<Mutex<Vec<(String, Vec<u8>)>>>;
+
 #[derive(Clone)]
 pub struct MockState {
     pub addr: String,
     pub images_mode: Arc<Mutex<ImagesMode>>,
     pub chat_mode: Arc<Mutex<ChatMode>>,
     pub captured: Arc<Mutex<Vec<(String, Value)>>>,
+    /// Raw request bytes, so multipart wire-format assertions are possible
+    /// without adding a multipart parser.
+    pub raw: RawCaptured,
 }
 
 /// An OpenAI-compatible mock server bound to an ephemeral port. Routes are
@@ -65,6 +71,7 @@ impl MockServer {
                 content: "mock_filename".to_string(),
             })),
             captured: Arc::new(Mutex::new(Vec::new())),
+            raw: Arc::new(Mutex::new(Vec::new())),
         };
         let app = Router::new()
             .route("/{*path}", any(dispatch))
@@ -101,18 +108,40 @@ impl MockServer {
             .map(|(_, b)| b)
             .collect()
     }
+
+    /// Raw request bytes for a path that contains `path`.
+    pub fn raw_requests_for(&self, path: &str) -> Vec<Vec<u8>> {
+        self.state
+            .raw
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(p, _)| p.contains(path))
+            .map(|(_, b)| b.clone())
+            .collect()
+    }
 }
 
 async fn dispatch(
     State(state): State<MockState>,
     method: Method,
     uri: Uri,
-    body: String,
+    body: axum::body::Bytes,
 ) -> Response {
     let path = uri.path().to_string();
-    let parsed: Value = serde_json::from_str(&body).unwrap_or_else(|_| json!({}));
+    // Multipart bodies are not JSON, so the parsed view falls back to `{}`;
+    // the raw view below is what edit wire-format assertions read.
+    let parsed: Value = serde_json::from_slice(&body).unwrap_or_else(|_| json!({}));
     state.captured.lock().unwrap().push((path.clone(), parsed));
+    state
+        .raw
+        .lock()
+        .unwrap()
+        .push((path.clone(), body.to_vec()));
 
+    if path.contains("images/edits") {
+        return images_logic(state, &uri).await;
+    }
     if path.contains("images/generations") {
         return images_logic(state, &uri).await;
     }
