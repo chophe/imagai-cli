@@ -814,6 +814,59 @@ mod tests {
     }
 
     #[test]
+    fn edit_transport_allows_gpt_image_engine() {
+        let cfg = EngineConfig {
+            model: Some("gpt-image-1".to_string()),
+            ..dalle_config()
+        };
+        assert_eq!(
+            edit_transport("openai_gpt", &cfg).unwrap(),
+            EditTransport::MultipartEdits
+        );
+    }
+
+    #[test]
+    fn edit_transport_allows_openrouter_base_url() {
+        let cfg = EngineConfig {
+            base_url: Some("https://openrouter.ai/api/v1".to_string()),
+            model: Some("google/gemini-2.0-flash-image".to_string()),
+            ..dalle_config()
+        };
+        assert_eq!(
+            edit_transport("openrouter_vision", &cfg).unwrap(),
+            EditTransport::ChatVision
+        );
+    }
+
+    #[test]
+    fn edit_transport_rejects_dall_e() {
+        assert!(edit_transport("openai_dalle3", &dalle_config()).is_err());
+    }
+
+    #[test]
+    fn edit_transport_rejects_stability() {
+        let cfg = EngineConfig {
+            model: Some("stability.sd3-large".to_string()),
+            ..dalle_config()
+        };
+        assert!(edit_transport("stability", &cfg).is_err());
+    }
+
+    #[test]
+    fn edit_transport_error_names_engine_and_model() {
+        let cfg = EngineConfig {
+            model: Some("stability.sd3-large".to_string()),
+            ..dalle_config()
+        };
+        let err = edit_transport("my_stability_engine", &cfg)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("my_stability_engine"), "{err}");
+        assert!(err.contains("stability.sd3-large"), "{err}");
+        assert!(err.contains("cannot accept image input for edits"), "{err}");
+    }
+
+    #[test]
     fn resolve_url_defaults_to_openai() {
         assert_eq!(
             resolve_url(&None, "images/generations"),

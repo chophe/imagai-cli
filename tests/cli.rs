@@ -396,6 +396,96 @@ async fn edit_saves_source_derived_image_with_lineage_metadata() {
     );
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn edit_rejects_incapable_engine_without_sending_a_request() {
+    let mock = MockServer::start().await;
+    let out = TempDir::new().unwrap();
+    let source = seed_source_png(out.path(), "source.png");
+
+    // dall-e-3 cannot take image input: must fail before any HTTP call, so no
+    // credits are spent.
+    cmd_edit(&mock, out.path())
+        .env("IMAGAI__ENGINES__MOCK__MODEL", "dall-e-3")
+        .args(["edit", "--image"])
+        .arg(&source)
+        .args(["-p", "make it sunset"])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "cannot accept image input for edits",
+        ))
+        .stderr(predicate::str::contains("dall-e-3"));
+
+    assert!(
+        mock.requests().is_empty(),
+        "no request may be issued on the incapable-engine path"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn edit_missing_source_file_fails() {
+    let mock = MockServer::start().await;
+    let out = TempDir::new().unwrap();
+
+    cmd_edit(&mock, out.path())
+        .args(["edit", "--image"])
+        .arg(out.path().join("does-not-exist.png"))
+        .args(["-p", "make it sunset"])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "Source image not found or unreadable",
+        ));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn edit_without_image_fails_before_auto_pick_lands() {
+    let mock = MockServer::start().await;
+    let out = TempDir::new().unwrap();
+
+    cmd_edit(&mock, out.path())
+        .args(["edit", "-p", "make it sunset"])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("--image"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn edit_empty_prompt_fails() {
+    let mock = MockServer::start().await;
+    let out = TempDir::new().unwrap();
+    let source = seed_source_png(out.path(), "source.png");
+
+    cmd_edit(&mock, out.path())
+        .args(["edit", "--image"])
+        .arg(&source)
+        .args(["-p", ""])
+        .write_stdin("")
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("Prompt cannot be empty"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn edit_unknown_engine_fails() {
+    let mock = MockServer::start().await;
+    let out = TempDir::new().unwrap();
+    let source = seed_source_png(out.path(), "source.png");
+
+    cmd_edit(&mock, out.path())
+        .args(["edit", "--image"])
+        .arg(&source)
+        .args(["-p", "make it sunset", "--engine", "nope"])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("not configured"));
+}
+
 // ---------------------------------------------------------------- errors
 
 #[tokio::test(flavor = "multi_thread")]
