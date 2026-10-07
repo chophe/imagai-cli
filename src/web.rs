@@ -14,7 +14,6 @@ use tower_http::cors::{Any, CorsLayer};
 use crate::config::Settings;
 use crate::core::generate_image_core;
 use crate::models::ImageGenerationRequest;
-use crate::utils::IMAGE_EXTENSIONS;
 
 const WEB_INTERFACE_HTML: &str = include_str!("../web_interface.html");
 
@@ -329,55 +328,40 @@ async fn generate_cli(State(state): State<AppState>, Json(payload): Json<CliPayl
 }
 
 async fn list_images(State(state): State<AppState>) -> Json<Value> {
-    let mut images: Vec<Value> = Vec::new();
     let dir = &state.settings.output_dir;
-    if let Ok(entries) = std::fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if !path.is_file() {
-                continue;
-            }
-            let ext = path
-                .extension()
-                .and_then(|e| e.to_str())
-                .map(|e| e.to_lowercase())
-                .unwrap_or_default();
-            if !IMAGE_EXTENSIONS.contains(&ext.as_str()) {
-                continue;
-            }
-            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-                continue;
-            };
-            let Ok(meta) = path.metadata() else {
-                continue;
-            };
-            let modified = std::time::UNIX_EPOCH
-                + Duration::from_secs(
-                    meta.modified()
-                        .map(|t| {
-                            t.duration_since(std::time::UNIX_EPOCH)
-                                .map(|d| d.as_secs())
-                                .unwrap_or(0)
-                        })
-                        .unwrap_or(0),
-                );
-            let created_iso = datetime_iso(modified);
-            let modified_iso = datetime_iso(modified);
-            images.push(json!({
-                "filename": name,
-                "size": meta.len(),
-                "created": created_iso,
-                "modified": modified_iso,
-                "url": format!("/api/images/{name}"),
-            }));
-        }
+    // One directory-listing implementation, shared with the CLI's auto-pick:
+    // `list_output_images` already returns newest-first, so no second sort.
+    let mut images: Vec<Value> = Vec::new();
+    for path in crate::utils::list_output_images(dir) {
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        let Ok(meta) = path.metadata() else {
+            continue;
+        };
+        let modified = std::time::UNIX_EPOCH
+            + Duration::from_secs(
+                meta.modified()
+                    .map(|t| {
+                        t.duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_secs())
+                            .unwrap_or(0)
+                    })
+                    .unwrap_or(0),
+            );
+        // `created` deliberately still derives from mtime — a recorded bug in
+        // .planning/codebase/CONCERNS.md owned by a later phase. Changing the
+        // response shape here would break existing gallery consumers.
+        let created_iso = datetime_iso(modified);
+        let modified_iso = datetime_iso(modified);
+        images.push(json!({
+            "filename": name,
+            "size": meta.len(),
+            "created": created_iso,
+            "modified": modified_iso,
+            "url": format!("/api/images/{name}"),
+        }));
     }
-    images.sort_by(|a, b| {
-        b.get("created")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .cmp(a.get("created").and_then(|v| v.as_str()).unwrap_or(""))
-    });
     Json(json!({ "success": true, "images": images }))
 }
 

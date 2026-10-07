@@ -348,13 +348,26 @@ async fn cmd_edit(args: &EditArgs, settings: &Settings) -> anyhow::Result<()> {
         std::process::exit(1);
     }
 
-    // The auto-pick branch (D-03) lands on this same path in a later plan.
-    let Some(image) = args.image.clone() else {
-        eprintln!(
-            "{} --image is required. Pass the path of the image to edit.",
-            "[Error]".bold().red()
-        );
-        std::process::exit(1);
+    // D-03: an explicit `--image` always wins. Without one, the most recent
+    // image in `output_dir` is used and named out loud — a silent pick would
+    // edit a file the user never chose (T-01-07).
+    let image = match args.image.clone() {
+        Some(explicit) => explicit,
+        None => {
+            let candidates = crate::utils::list_output_images(&settings.output_dir);
+            let Some(picked) = candidates.first() else {
+                anyhow::bail!(
+                    "No images found in output directory {:?}. Pass --image <path> to choose a source explicitly.",
+                    settings.output_dir
+                );
+            };
+            let picked = picked.to_string_lossy().to_string();
+            println!(
+                "{} Using most recent image: {picked}",
+                "🖼️".bright_cyan()
+            );
+            picked
+        }
     };
     match std::fs::metadata(&image) {
         Ok(meta) if meta.is_file() => {}
