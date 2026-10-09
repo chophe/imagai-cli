@@ -411,6 +411,316 @@ async fn generate_cli_runs_valid_command() {
     assert!(value.get("returncode").is_some());
 }
 
+// ---------------------------------------------------------------- history
+
+/// Seed a `.imagai-history.json` sidecar directly into `dir`, so the endpoint
+/// responses are deterministic. No PNGs are written: the nodes read as
+/// `missing` (D-20), which is what two of these tests assert.
+fn seed_history_store(dir: &Path, records: &[Value]) {
+    let json = serde_json::to_string(records).expect("serialize store");
+    std::fs::write(dir.join(".imagai-history.json"), json).expect("seed store");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn history_endpoint_returns_nested_tree() {
+    let mock = MockServer::start().await;
+    let out = TempDir::new().unwrap();
+    seed_history_store(
+        out.path(),
+        &[
+            json!({
+                "id": "1a2b3c4d", "parent": null, "filename": "cat.png",
+                "prompt": "a cat", "model": "dall-e-3", "created": "2026-10-09T11:40:00"
+            }),
+            json!({
+                "id": "2b3c4d5e", "parent": "1a2b3c4d", "filename": "cat-edit.png",
+                "prompt": "make it sunset", "model": "gpt-image-1",
+                "created": "2026-10-09T11:41:00"
+            }),
+        ],
+    );
+    let app = web::router(test_settings(&mock, out.path()));
+
+    let (status, value) = get(app, "/api/history").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(value["success"], true);
+    assert_eq!(value["nodes"], 2);
+    assert_eq!(value["missing"], 2, "neither file exists on disk");
+
+    let roots = value["roots"].as_array().expect("roots array");
+    assert_eq!(roots.len(), 1, "one session");
+    let root = &roots[0];
+    let id = root["id"].as_str().expect("root id");
+    assert_eq!(id.len(), 8, "8-hex node id: {id}");
+    assert!(id
+        .bytes()
+        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)));
+    let children = root["children"].as_array().expect("children array");
+    assert_eq!(children.len(), 1);
+    assert_eq!(children[0]["parent"], root["id"], "child names its parent");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn history_endpoint_orders_roots_newest_first() {
+    let mock = MockServer::start().await;
+    let out = TempDir::new().unwrap();
+    seed_history_store(
+        out.path(),
+        &[
+            json!({
+                "id": "aaa11111", "parent": null, "filename": "old.png",
+                "prompt": "old", "model": "dall-e-3", "created": "2026-10-09T10:00:00"
+            }),
+            json!({
+                "id": "bbb22222", "parent": null, "filename": "new.png",
+                "prompt": "new", "model": "dall-e-3", "created": "2026-10-09T12:00:00"
+            }),
+        ],
+    );
+    let app = web::router(test_settings(&mock, out.path()));
+
+    let (status, value) = get(app, "/api/history").await;
+    assert_eq!(status, StatusCode::OK);
+    let roots = value["roots"].as_array().expect("roots array");
+    assert_eq!(roots.len(), 2);
+    // The fixed-width ISO format makes string ordering chronological.
+    let first = roots[0]["created"].as_str().expect("created");
+    let second = roots[1]["created"].as_str().expect("created");
+    assert!(first > second, "roots newest first: {first} > {second}");
+
+    // Children oldest-first under one root.
+    seed_history_store(
+        out.path(),
+        &[
+            json!({
+                "id": "aaa11111", "parent": null, "filename": "root.png",
+                "prompt": "root", "model": "dall-e-3", "created": "2026-10-09T10:00:00"
+            }),
+            json!({
+                "id": "bbb22222", "parent": "aaa11111", "filename": "kid2.png",
+                "prompt": "kid2", "model": "gpt-image-1", "created": "2026-10-09T13:00:00"
+            }),
+            json!({
+                "id": "ccc33333", "parent": "aaa11111", "filename": "kid1.png",
+                "prompt": "kid1", "model": "gpt-image-1", "created": "2026-10-09T11:30:00"
+            }),
+        ],
+    );
+    let app = web::router(test_settings(&mock, out.path()));
+    let (status, value) = get(app, "/api/history").await;
+    assert_eq!(status, StatusCode::OK);
+    let children = value["roots"][0]["children"].as_array().expect("children");
+    assert_eq!(children.len(), 2);
+    let first = children[0]["created"].as_str().expect("created");
+    let second = children[1]["created"].as_str().expect("created");
+    assert!(first < second, "children oldest first: {first} < {second}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn history_endpoint_empty_dir() {
+    let mock = MockServer::start().await;
+    let out = TempDir::new().unwrap();
+    let app = web::router(test_settings(&mock, out.path()));
+
+    let (status, value) = get(app, "/api/history").await;
+    assert_eq!(status, StatusCode::OK);
+    // An empty history is a successful response, not an error.
+    assert_eq!(value["success"], true);
+    assert_eq!(value["nodes"], 0);
+    assert_eq!(value["missing"], 0);
+    assert!(value["roots"].as_array().expect("roots").is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn history_endpoint_reports_unreadable_store() {
+    let mock = MockServer::start().await;
+    let out = TempDir::new().unwrap();
+    std::fs::write(out.path().join(".imagai-history.json"), b"{not json")
+        .expect("write corrupt sidecar");
+    let app = web::router(test_settings(&mock, out.path()));
+
+    let (status, value) = get(app, "/api/history").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(value["success"], false);
+    let error = value["error"].as_str().expect("error sentence");
+    assert!(
+        error.contains("Could not read history at"),
+        "the store sentence arrives verbatim: {error}"
+    );
+    assert!(
+        error.contains(".imagai-history.json"),
+        "names the path: {error}"
+    );
+}
+
+// ---------------------------------------------------------------- fork
+
+#[tokio::test(flavor = "multi_thread")]
+async fn fork_endpoint_returns_result_items() {
+    let mock = MockServer::start().await;
+    let out = TempDir::new().unwrap();
+    seed_history_store(
+        out.path(),
+        &[json!({
+            "id": "1a2b3c4d", "parent": null, "filename": "cat.png",
+            "prompt": "a cat", "model": "dall-e-3", "created": "2026-10-09T11:40:00"
+        })],
+    );
+    seed_source_png(out.path(), "cat.png");
+    let app = web::router(edit_capable_settings(&mock, out.path()));
+
+    let payload = json!({"from": "1a2b3c4d", "prompt": "make it sunset"});
+    let (status, value) = post_json(app, "/api/fork", &payload).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(value["success"], true);
+    let result = &value["results"][0];
+    assert_eq!(result["success"], true);
+    let saved_path = result["saved_path"].as_str().expect("saved_path");
+    assert!(
+        saved_path.ends_with("cat-edit.png"),
+        "the existing -edit naming scheme: {saved_path}"
+    );
+    let image_data = result["image_data"].as_str().expect("base64 preview");
+    assert!(image_data.starts_with("data:image/png;base64,"));
+    assert!(Path::new(saved_path).is_file(), "file exists on disk");
+
+    // The response carries exactly the keys `result_items_json` produces, so
+    // drift from /api/edit is a test failure.
+    for key in ["index", "success", "error", "saved_path", "image_data"] {
+        assert!(result.get(key).is_some(), "result carries {key}");
+    }
+
+    assert_eq!(mock.requests_for("/v1/images/edits").len(), 1);
+    assert_eq!(mock.requests_for("/v1/images/generations").len(), 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn fork_endpoint_rejects_traversal_from() {
+    let mock = MockServer::start().await;
+    let out = TempDir::new().unwrap();
+    seed_source_png(out.path(), "cat.png");
+    let app = web::router(edit_capable_settings(&mock, out.path()));
+
+    let payload = json!({"prompt": "x", "from": "../../.env"});
+    let (status, value) = post_json(app, "/api/fork", &payload).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(value["success"], false);
+    assert!(
+        value["error"].as_str().unwrap().contains("plain filename"),
+        "explicit refusal, not silent reduction: {}",
+        value["error"]
+    );
+    assert!(mock.requests().is_empty(), "nothing was read or sent");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn fork_endpoint_rejects_traversal_output() {
+    let mock = MockServer::start().await;
+    let out = TempDir::new().unwrap();
+    seed_source_png(out.path(), "cat.png");
+    let app = web::router(edit_capable_settings(&mock, out.path()));
+
+    let payload = json!({"prompt": "x", "from": "cat.png", "output": "../../escaped.png"});
+    let (status, value) = post_json(app, "/api/fork", &payload).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(value["success"], false);
+    assert!(mock.requests().is_empty(), "nothing was read or sent");
+    // The write side: nothing escaped the output directory.
+    assert!(
+        !out.path().parent().unwrap().join("escaped.png").exists(),
+        "no file written outside output_dir"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn fork_endpoint_rejects_empty_prompt() {
+    let mock = MockServer::start().await;
+    let out = TempDir::new().unwrap();
+    seed_history_store(
+        out.path(),
+        &[json!({
+            "id": "1a2b3c4d", "parent": null, "filename": "cat.png",
+            "prompt": "a cat", "model": "dall-e-3", "created": "2026-10-09T11:40:00"
+        })],
+    );
+    seed_source_png(out.path(), "cat.png");
+    let app = web::router(edit_capable_settings(&mock, out.path()));
+
+    let payload = json!({"from": "1a2b3c4d", "prompt": ""});
+    let (status, value) = post_json(app, "/api/fork", &payload).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(value["success"], false);
+    assert!(mock.requests().is_empty(), "nothing was sent");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn fork_endpoint_rejects_more_than_sixteen_images() {
+    let mock = MockServer::start().await;
+    let out = TempDir::new().unwrap();
+    seed_history_store(
+        out.path(),
+        &[json!({
+            "id": "1a2b3c4d", "parent": null, "filename": "cat.png",
+            "prompt": "a cat", "model": "dall-e-3", "created": "2026-10-09T11:40:00"
+        })],
+    );
+    seed_source_png(out.path(), "cat.png");
+    let app = web::router(edit_capable_settings(&mock, out.path()));
+
+    let refs: Vec<Value> = (0..16)
+        .map(|i| Value::String(format!("ref-{i}.png")))
+        .collect();
+    let payload = json!({"from": "1a2b3c4d", "prompt": "x", "refs": refs});
+    let (status, value) = post_json(app, "/api/fork", &payload).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(value["success"], false);
+    let error = value["error"].as_str().unwrap();
+    assert!(error.contains("17"), "states the requested count: {error}");
+    assert!(error.contains("16"), "states the allowed count: {error}");
+    assert!(mock.requests().is_empty(), "nothing was read or sent");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn fork_endpoint_reports_unknown_from() {
+    let mock = MockServer::start().await;
+    let out = TempDir::new().unwrap();
+    let app = web::router(edit_capable_settings(&mock, out.path()));
+
+    let payload = json!({"from": "nope.png", "prompt": "x"});
+    let (status, value) = post_json(app, "/api/fork", &payload).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(value["success"], false);
+    let error = value["error"].as_str().unwrap();
+    assert!(
+        error.contains("No history node or image named 'nope.png'"),
+        "the resolver is the single source of that wording: {error}"
+    );
+    assert!(mock.requests().is_empty(), "nothing was sent");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn history_form_is_served_with_fork_controls() {
+    let mock = MockServer::start().await;
+    let out = TempDir::new().unwrap();
+    let app = web::router(test_settings(&mock, out.path()));
+
+    // `web_interface.html` is `include_str!`-ed at compile time, so a serve
+    // test proves the edited file is embedded and reaches the browser.
+    let (status, value) = get(app, "/").await;
+    assert_eq!(status, StatusCode::OK);
+    let html = value.as_str().expect("HTML body");
+    for needle in [
+        "historyForm",
+        "history_node",
+        "historyBtn",
+        "Fork selected node",
+        "/api/fork",
+        "/api/history",
+    ] {
+        assert!(html.contains(needle), "served HTML contains {needle}");
+    }
+}
+
 // ---------------------------------------------------------------- edits
 
 /// Write a 1x1 PNG to `dir/name` and return its path.

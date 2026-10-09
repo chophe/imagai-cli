@@ -85,6 +85,24 @@ struct EditPayload {
     verbose: bool,
 }
 
+/// Payload for `POST /api/fork`. The branch point (`from`) is an 8-hex node id
+/// or a bare filename inside `output_dir`, never a path — the same trust
+/// boundary `/api/edit` applies to every path-shaped field.
+#[derive(Deserialize)]
+struct ForkPayload {
+    prompt: String,
+    #[serde(default)]
+    engine: Option<String>,
+    #[serde(default)]
+    from: Option<String>,
+    #[serde(default)]
+    refs: Vec<String>,
+    #[serde(default)]
+    output: Option<String>,
+    #[serde(default)]
+    verbose: bool,
+}
+
 fn default_one() -> u32 {
     1
 }
@@ -115,6 +133,8 @@ pub fn router(settings: Settings) -> Router {
         .route("/api/engines", get(list_engines))
         .route("/api/generate", post(generate))
         .route("/api/edit", post(edit))
+        .route("/api/fork", post(fork))
+        .route("/api/history", get(history))
         .route("/api/generate-cli", post(generate_cli))
         .route("/api/images", get(list_images))
         .route("/api/images/{filename}", get(serve_image))
@@ -434,6 +454,210 @@ async fn edit(State(state): State<AppState>, Json(payload): Json<EditPayload>) -
         "success": true,
         "results": result_items_json(&results),
         "command": "Edited image using core engine",
+    }))
+    .into_response()
+}
+
+/// The whole iteration tree over HTTP. The response serializes the same
+/// `history::HistoryView` the CLI's `--json` prints, so the two shapes cannot
+/// drift (D-19, BRCH-04) — no second node struct is built here.
+async fn history(State(state): State<AppState>) -> Response {
+    match crate::history::load_view(&state.settings.output_dir) {
+        Ok(view) => Json(json!({
+            "success": true,
+            "output_dir": view.output_dir,
+            "nodes": view.nodes,
+            "missing": view.missing,
+            "roots": view.roots,
+        }))
+        .into_response(),
+        // The unreadable-store sentence arrives verbatim; a silent empty tree
+        // is impossible. HTTP 200 matches every other handler in this file.
+        Err(e) => Json(json!({ "success": false, "error": e.to_string() })).into_response(),
+    }
+}
+
+/// `POST /api/fork` — start an edit from a past image.
+///
+/// A copy of `edit` whose source is resolved through history instead of taken
+/// as a bare filename, and whose response is `result_items_json` verbatim so
+/// the two edit-family endpoints cannot drift apart.
+async fn fork(State(state): State<AppState>, Json(payload): Json<ForkPayload>) -> Response {
+    // Trust boundary first, before any read or network call: every path-shaped
+    // field must already be a bare filename. A value carrying a separator is
+    // refused outright rather than silently reduced (T-01-10, T-01-11).
+    for raw in payload
+        .from
+        .iter()
+        .chain(payload.refs.iter())
+        .chain(payload.output.iter())
+    {
+        if !is_plain_filename(raw) {
+            return Json(json!({
+                "success": false,
+                "error": format!("'{raw}' is not a plain filename inside output_dir"),
+            }))
+            .into_response();
+        }
+    }
+
+    // Reference count before any read or network call: over 16 is a reported
+    // error stating both counts, never a silent truncation.
+    let requested = 1 + payload.refs.len();
+    if requested > 16 {
+        return Json(json!({
+            "success": false,
+            "error": format!("{requested} images requested but the provider accepts at most 16"),
+        }))
+        .into_response();
+    }
+
+    // A fork with no change instruction is refused before anything is read or
+    // sent, with the CLI's sentence for the same condition.
+    if payload.prompt.trim().is_empty() {
+        return Json(json!({
+            "success": false,
+            "error": "Prompt cannot be empty.",
+        }))
+        .into_response();
+    }
+
+    // Engine resolution mirrors `edit` exactly: an explicit engine, then the
+    // default, then the same `success: false` envelopes — never a 400.
+    let engine = payload
+        .engine
+        .clone()
+        .or_else(|| state.settings.default_engine.clone());
+    let Some(engine) = engine else {
+        return Json(json!({
+            "success": false,
+            "error": "No engine specified and no default engine configured",
+        }))
+        .into_response();
+    };
+
+    if state.settings.get_engine(&engine).is_none() {
+        return Json(json!({
+            "success": false,
+            "error": format!("Engine \"{engine}\" is not configured"),
+        }))
+        .into_response();
+    }
+
+    // Filename resolution before anything else touches the filesystem. The
+    // branch point resolves through the shared resolver, so the CLI, TUI and
+    // web agree on what a node id, a filename and an untracked file mean
+    // (D-12) — and on the three error sentences.
+    let dir = &state.settings.output_dir;
+    let Some(from) = payload.from.as_deref() else {
+        return Json(json!({
+            "success": false,
+            "error": "No source named — pass 'from' with a node id or filename.",
+        }))
+        .into_response();
+    };
+    let source_path = match crate::history::resolve_fork_source(dir, from) {
+        Ok(crate::history::ForkSource::Node { filename, .. }) => {
+            // The record's filename is reduced to its final component before
+            // it is joined, exactly as `output_dir_file` does, so a hand-edited
+            // sidecar cannot name a path outside `output_dir` (T-02-10).
+            let Some(path) = output_dir_file(dir, &filename) else {
+                return Json(json!({
+                    "success": false,
+                    "error": format!("Source image '{filename}' not found in output_dir"),
+                }))
+                .into_response();
+            };
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(filename.as_str());
+            if !path.is_file() {
+                return Json(json!({
+                    "success": false,
+                    "error": format!("Source image '{name}' not found in output_dir"),
+                }))
+                .into_response();
+            }
+            path
+        }
+        Ok(crate::history::ForkSource::File { path, .. }) => {
+            if !path.is_file() {
+                let name = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(from)
+                    .to_string();
+                return Json(json!({
+                    "success": false,
+                    "error": format!("Source image '{name}' not found in output_dir"),
+                }))
+                .into_response();
+            }
+            path
+        }
+        Err(e) => {
+            // The resolver's three sentences are this endpoint's whole error
+            // vocabulary for a bad `from`.
+            return Json(json!({ "success": false, "error": e.to_string() })).into_response();
+        }
+    };
+
+    let mut ref_paths = Vec::with_capacity(payload.refs.len());
+    for raw in &payload.refs {
+        let Some(path) = output_dir_file(dir, raw) else {
+            return Json(json!({
+                "success": false,
+                "error": format!("Reference image '{raw}' not found in output_dir"),
+            }))
+            .into_response();
+        };
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or(raw);
+        if !path.is_file() {
+            return Json(json!({
+                "success": false,
+                "error": format!("Reference image '{name}' not found in output_dir"),
+            }))
+            .into_response();
+        }
+        ref_paths.push(path);
+    }
+
+    // `generate_image_core` joins the output name onto `output_dir` without
+    // reducing it, so the reduced filename — not the raw payload string — is
+    // what crosses into the core.
+    let output_filename = payload
+        .output
+        .as_deref()
+        .and_then(|raw| output_dir_file(dir, raw))
+        .and_then(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .map(|s| s.to_string())
+        });
+
+    // The same `ImageGenerationRequest` `edit` builds: source plus refs in
+    // payload order, `n: 1`, no `extra_params`.
+    let request = ImageGenerationRequest {
+        prompt: payload.prompt,
+        engine,
+        output_filename,
+        n: 1,
+        verbose: payload.verbose,
+        source_image: Some(source_path.to_string_lossy().to_string()),
+        ref_images: ref_paths
+            .iter()
+            .map(|p| p.to_string_lossy().to_string())
+            .collect(),
+        ..Default::default()
+    };
+
+    let results = generate_image_core(&request, &state.settings).await;
+
+    Json(json!({
+        "success": true,
+        "results": result_items_json(&results),
+        "command": "Forked edit using core engine",
     }))
     .into_response()
 }

@@ -560,6 +560,46 @@
                 </button>
             </form>
 
+            <form id="historyForm">
+                <div class="section-title">Iteration history</div>
+
+                <div class="form-group full-width">
+                    <label for="history_node">Branch point</label>
+                    <select id="history_node" name="from" size="8"></select>
+                    <div class="help-text">One row per node, newest branch first: id · snippet · filename · time. Pick one and fork from it.</div>
+                </div>
+
+                <div class="form-group">
+                    <label for="history_prompt">Change instruction</label>
+                    <textarea id="history_prompt" name="prompt" placeholder="Describe the change, e.g. make it sunset..."></textarea>
+                    <div class="help-text">The branch point already carries the scene, so the instruction describes only the change</div>
+                </div>
+
+                <div class="form-group">
+                    <label for="history_engine">Engine</label>
+                    <select id="history_engine" name="engine">
+                        <option value="">Use Default Engine</option>
+                    </select>
+                    <div class="help-text">Must be an engine that accepts image input</div>
+                </div>
+
+                <div class="form-group">
+                    <label for="history_refs">Reference images (optional, ctrl/cmd-click for multiple)</label>
+                    <select id="history_refs" name="refs" multiple size="5"></select>
+                    <div class="help-text">Extra images to blend in, in the order selected</div>
+                </div>
+
+                <div class="form-group">
+                    <label for="history_output">Output filename</label>
+                    <input type="text" id="history_output" name="output" placeholder="forked_image.png">
+                    <div class="help-text">Leave empty for a source-derived filename</div>
+                </div>
+
+                <button type="submit" class="generate-btn" id="historyBtn">
+                    Fork selected node
+                </button>
+            </form>
+
             <div class="output-section">
                 <div class="output-title">Output</div>
                 <div class="loading" id="loading">
@@ -831,6 +871,23 @@
                             editEngineSelect.value = result.default_engine;
                         }
                     }
+
+                    // The history form's fork picker is fed by the same list.
+                    const historyEngineSelect = document.getElementById('history_engine');
+                    if (historyEngineSelect) {
+                        while (historyEngineSelect.children.length > 1) {
+                            historyEngineSelect.removeChild(historyEngineSelect.lastChild);
+                        }
+                        result.engines.forEach(engine => {
+                            const option = document.createElement('option');
+                            option.value = engine.name;
+                            option.textContent = `${engine.name} (${engine.model})`;
+                            historyEngineSelect.appendChild(option);
+                        });
+                        if (result.default_engine) {
+                            historyEngineSelect.value = result.default_engine;
+                        }
+                    }
                 }
             } catch (error) {
                 console.error('Failed to load engines:', error);
@@ -1048,11 +1105,152 @@
             }
         }
         
+        // Build the iteration-history node list from the API, using the same
+        // row grammar the CLI tree prints (id, 32-char prompt snippet,
+        // filename, time) with the connectors rendered as leading spaces so
+        // branch depth reads at a glance.
+        function historyNodeLabel(node, depth) {
+            const indent = '   '.repeat(depth);
+            const prompt = node.prompt || '(unknown prompt)';
+            const clipped = prompt.length > 32 ? prompt.slice(0, 29) + '...' : prompt.padEnd(32);
+            const time = node.created.slice(0, 10) + ' ' + node.created.slice(11, 16);
+            const missing = node.missing ? '✗ ' : '';
+            return `${indent}${missing}${node.id}  ${clipped}  ${node.filename}  ${time}`;
+        }
+
+        // Load the iteration tree into the branch-point picker.
+        async function loadHistory() {
+            const select = document.getElementById('history_node');
+            const button = document.getElementById('historyBtn');
+            try {
+                const response = await fetch('/api/history');
+                const result = await response.json();
+
+                if (result.success) {
+                    select.innerHTML = '';
+                    // The API returns the tree in contract order — never
+                    // re-sort roots or children client-side.
+                    if (result.missing > 0) {
+                        const missingOption = document.createElement('option');
+                        missingOption.disabled = true;
+                        missingOption.textContent = result.missing === 1
+                            ? '1 node in history is missing from disk'
+                            : `${result.missing} nodes in history are missing from disk`;
+                        select.appendChild(missingOption);
+                    }
+                    const sentinel = document.createElement('option');
+                    sentinel.value = '';
+                    sentinel.textContent = 'Pick a node to fork from';
+                    select.appendChild(sentinel);
+
+                    const append = (nodes, depth) => {
+                        nodes.forEach(node => {
+                            const option = document.createElement('option');
+                            option.value = node.id;
+                            option.textContent = historyNodeLabel(node, depth);
+                            select.appendChild(option);
+                            append(node.children || [], depth + 1);
+                        });
+                    };
+                    append(result.roots, 0);
+
+                    // An empty history has nothing to fork from.
+                    button.disabled = result.roots.length === 0;
+                }
+            } catch (error) {
+                console.error('Failed to load history:', error);
+            }
+        }
+
+        // Execute a fork of the selected branch point via API
+        async function executeFork() {
+            const outputElement = document.getElementById('output-content');
+            const imagePreview = document.getElementById('image-preview');
+
+            // Explicit form values only — refs as an array from
+            // selectedOptions, so a multi-select transmits multiple entries in
+            // the order they were selected.
+            const body = {};
+            body.from = document.getElementById('history_node').value;
+            body.prompt = document.getElementById('history_prompt').value.trim();
+            const historyEngine = document.getElementById('history_engine').value;
+            if (historyEngine) {
+                body.engine = historyEngine;
+            }
+            const historyOutput = document.getElementById('history_output').value.trim();
+            if (historyOutput) {
+                body.output = historyOutput;
+            }
+            body.refs = Array.from(document.getElementById('history_refs').selectedOptions).map(o => o.value);
+
+            outputElement.textContent = `🚀 Starting image edit...\n📝 Change: ${body.prompt}\n🖼️ Branch point: ${body.from || 'none selected'}\n`;
+
+            try {
+                const response = await fetch('/api/fork', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(body)
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    outputElement.textContent += `\n✅ Fork completed successfully!\n`;
+
+                    // Display results
+                    result.results.forEach((res, index) => {
+                        if (res.success) {
+                            outputElement.textContent += `\n📸 Forked image: success`;
+                            if (res.saved_path) {
+                                outputElement.textContent += `\n📁 Saved to: ${res.saved_path}`;
+                            }
+
+                            // Display image preview with the same styling
+                            // the edit path applies
+                            if (res.image_data) {
+                                const imgElement = document.createElement('img');
+                                imgElement.src = res.image_data;
+                                imgElement.style.maxWidth = '100%';
+                                imgElement.style.maxHeight = '500px';
+                                imgElement.style.borderRadius = '10px';
+                                imgElement.style.boxShadow = '0 10px 30px rgba(0,0,0,0.2)';
+                                imgElement.style.marginTop = '10px';
+
+                                const imgContainer = document.createElement('div');
+                                imgContainer.style.textAlign = 'center';
+                                imgContainer.style.marginTop = '20px';
+                                imgContainer.appendChild(imgElement);
+
+                                if (index === 0) {
+                                    imagePreview.innerHTML = '';
+                                }
+                                imagePreview.appendChild(imgContainer);
+                            }
+                        } else {
+                            outputElement.textContent += `\n❌ ${res.error}`;
+                        }
+                    });
+
+                    // The forked result joins the tree without a reload.
+                    loadHistory();
+                } else {
+                    outputElement.textContent += `\n❌ Fork failed: ${result.error}`;
+                }
+
+            } catch (error) {
+                outputElement.textContent += `\n💥 Network error: ${error.message}`;
+                console.error('Fork error:', error);
+            }
+        }
+
         // Load settings and engines on page load
         document.addEventListener('DOMContentLoaded', function() {
             loadSettings();
             loadEngines();
             loadOutputImages();
+            loadHistory();
             initializeImageUpload();
         });
 
@@ -1078,6 +1276,33 @@
             } finally {
                 editBtn.disabled = false;
                 loading.classList.remove('show');
+                loadOutputImages();
+            }
+        });
+        // History form submission handler
+        document.getElementById('historyForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+
+            const historyBtn = document.getElementById('historyBtn');
+            const loading = document.getElementById('loading');
+            const outputContent = document.getElementById('output-content');
+            const imagePreview = document.getElementById('image-preview');
+
+            // Show loading state exactly as the generate handler does.
+            historyBtn.disabled = true;
+            loading.classList.add('show');
+            outputContent.textContent = '';
+            imagePreview.innerHTML = '';
+
+            try {
+                await executeFork();
+            } catch (error) {
+                outputContent.textContent = `Error: ${error.message}`;
+            } finally {
+                historyBtn.disabled = false;
+                loading.classList.remove('show');
+                // Reset the branch point to the sentinel.
+                document.getElementById('history_node').value = '';
                 loadOutputImages();
             }
         });
