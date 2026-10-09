@@ -20,10 +20,10 @@ progress:
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-10-04)
+See: .planning/PROJECT.md (updated 2026-10-09)
 
 **Core value:** One command → one generated or edited image, from any surface, against any configured provider — with the iteration history preserved so users can branch instead of starting over.
-**Current focus:** Phase 01 — Image Editing
+**Current focus:** Phase 2 — Branching & Iteration History
 
 ## Current Position
 
@@ -64,6 +64,10 @@ Recent decisions affecting current work:
 
 - [Roadmap]: 4 coarse phases — Editing → Branching → Providers → Ship; video (VID-01) stays v2
 - [Roadmap]: ROB-01 + DIST-01 grouped as "Ship to Users" (release readiness)
+- [Phase 1]: D-03 auto-pick — omitted `--image` uses newest output image, printed before request; explicit path always wins
+- [Phase 1]: D-05 capability gate — `edit_transport` decides wire shape before any socket opens, bails naming engine+model
+- [Phase 1]: D-07 PNG lineage — Prompt/Model/Source tEXt chunks, Source holds filename only
+- [Phase 1]: web stays localhost-only by convention; symlink-in-output-dir and TLS-trust accepts logged in 01-SECURITY.md
 
 ### Pending Todos
 
@@ -71,8 +75,8 @@ None yet.
 
 ### Blockers/Concerns
 
-- [Phase 1]: No image-input path exists yet — `ImageGenerationRequest` has no image field; edit transport (e.g. `/images/edits` or vendor shape) must be added in `src/provider.rs`
 - [Phase 2]: No persistence layer exists (images are the only output) — iteration history needs a new local store (e.g. sidecar metadata / manifest in `output_dir`)
+- [Phase 2]: `created`/`modified` gallery timestamps both derive from mtime — recorded bug, owned by a future phase
 
 ## Deferred Items
 
@@ -82,6 +86,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-10-04T14:47:21.669Z
+Last session: 2026-10-09
 Stopped at: Phase 01 complete, ready to plan Phase 2
-Resume file: .planning/phases/01-image-editing/01-CONTEXT.md
+Resume file: None

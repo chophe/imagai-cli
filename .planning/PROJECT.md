@@ -20,12 +20,14 @@ One command → one generated or edited image, from any surface, against any con
 - ✓ Multi-engine config with OpenAI-compatible HTTP transport (`src/config.rs`, `src/provider.rs`) — existing
 - ✓ Result persistence: filename strategies, PNG metadata injection, URL/b64 save (`src/utils.rs`) — existing
 - ✓ Model/engine listing across providers (`imagai list-engines`) — existing
+- ✓ Image editing from explicit path, past result, or multi-reference (`imagai edit`) — Phase 1 (EDIT-01)
+- ✓ Newest-output auto-pick + shared `list_output_images` helper across CLI/web — Phase 1 (EDIT-02)
+- ✓ Multi-reference edits with 16-image guard on all three surfaces — Phase 1 (EDIT-03)
 
 ### Active
 
 <!-- Current scope. Hypotheses until shipped and validated. -->
 
-- [ ] **EDIT-01**: User can edit an existing image (from a file path or a past result) by combining it with a new prompt, and get the result back in the same flow
 - [ ] **BRCH-01**: User can view an iteration history for an image and fork/branch any past result into a new edit without losing the original lineage
 - [ ] **BRCH-02**: Branching and editing work identically on all three surfaces (CLI, TUI, web)
 - [ ] **PRVD-01**: User can configure named non-OpenAI-compatible providers (multi-vendor adapters) alongside existing OpenAI-compatible engines, selected per request
@@ -45,7 +47,7 @@ One command → one generated or edited image, from any surface, against any con
 - **Brownfield**: this repo already implements the full text-to-image path across three surfaces (~3,417 LOC, 10 modules). Evidence: `.planning/codebase/` (complete map, refreshed 2026-10-03).
 - **Architecture**: modular monolith — thin frontends (`src/cli.rs`, `src/tui.rs`, `src/web.rs`) converge on `generate_image_core` (`src/core.rs`); transport in `src/provider.rs` (reqwest + rustls); one binary via clap subcommands.
 - **Known gaps that shape this work** (from `.planning/codebase/CONCERNS.md`):
-  - No img2img/edit path at all — the generation request has no image input
+  - ~~No img2img/edit path at all~~ — addressed by Phase 1 (`imagai edit` on all three surfaces via shared core)
   - Generation failures exit 0 (breaks scripting); errors carried as strings, not `Result`
   - No retries/backoff for 429/5xx; no cancellation/progress for long generations
   - Web server has no auth, wide-open CORS, no graceful shutdown
@@ -67,7 +69,7 @@ One command → one generated or edited image, from any surface, against any con
 | Branching = single-step edit AND forkable history | User wants to edit a chosen image and keep a branchable lineage of iterations | — Pending |
 | Video deferred to a later phase; images first | Video needs a separate (non-OpenAI-compatible) provider integration; images path already exists | — Pending |
 | Multi-vendor providers, not OpenAI-compatible-only | User will use named non-compatible vendors (incl. video) | — Pending |
-| Ship across all three surfaces (CLI, TUI, web) | Existing architecture already guarantees parity via shared core; new features must land on all three | — Pending |
+| Ship across all three surfaces (CLI, TUI, web) | Existing architecture already guarantees parity via shared core; new features must land on all three | Validated — Phase 1 shipped edit parity on all three |
 | Audience = other users | Drives distribution (DIST-01) and setup documentation | — Pending |
 
 ## Context Paths
@@ -93,4 +95,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-10-03 after initialization*
+*Last updated: 2026-10-09 after Phase 1*
