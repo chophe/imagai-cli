@@ -31,7 +31,7 @@ covered_files:
   - tests/cli.rs
   - tests/core.rs
   - tests/web.rs
-covered_digest: "unavailable-no-gsd-tools-in-subagent-env"
+covered_digest: "v1:sha256:b2f890801529f1f2bce96824306859a1becf7692402bc45b7eb620618ace994f"
 behavior_unverified: 0
 overrides_applied: 0
 ---

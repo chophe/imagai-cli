@@ -8,7 +8,7 @@ Brownfield extension of the existing modular monolith (shared core `src/core.rs`
 
 ## Phases
 
-- [ ] **Phase 1: Image Editing** - Edit an existing image (file path or past result, multi-reference) through the shared core on all three surfaces
+- [x] **Phase 1: Image Editing** - Edit an existing image (file path or past result, multi-reference) through the shared core on all three surfaces (completed 2026-10-09)
 - [ ] **Phase 2: Branching & Iteration History** - Persist and expose the iteration lineage: history tree, fork, step-back, cross-surface parity
 - [ ] **Phase 3: Multi-Vendor Providers** - Named non-OpenAI-compatible provider adapters alongside existing engines, selected per request
 - [ ] **Phase 4: Ship to Users** - Non-zero exit on failure plus single-binary install and provider setup docs
@@ -114,7 +114,7 @@ Brownfield extension of the existing modular monolith (shared core `src/core.rs`
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Image Editing | 0/5 | Not started | - |
+| 1. Image Editing | 5/5 | Complete    | 2026-10-09 |
 | 2. Branching & Iteration History | 0/3 (est.) | Not started | - |
 | 3. Multi-Vendor Providers | 0/2 (est.) | Not started | - |
 | 4. Ship to Users | 0/2 (est.) | Not started | - |

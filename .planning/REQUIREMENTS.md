@@ -9,9 +9,9 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### Editing
 
-- [ ] **EDIT-01**: User can edit an existing image from a file path by combining it with a new prompt
-- [ ] **EDIT-02**: User can use any past generation as the source for a new edit
-- [ ] **EDIT-03**: User can pass multiple reference images to a single edit request
+- [x] **EDIT-01**: User can edit an existing image from a file path by combining it with a new prompt
+- [x] **EDIT-02**: User can use any past generation as the source for a new edit
+- [x] **EDIT-03**: User can pass multiple reference images to a single edit request
 
 ### Branching
 
@@ -66,9 +66,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| EDIT-01 | Phase 1 | Pending |
-| EDIT-02 | Phase 1 | Pending |
-| EDIT-03 | Phase 1 | Pending |
+| EDIT-01 | Phase 1 | Complete |
+| EDIT-02 | Phase 1 | Complete |
+| EDIT-03 | Phase 1 | Complete |
 | BRCH-01 | Phase 2 | Pending |
 | BRCH-02 | Phase 2 | Pending |
 | BRCH-03 | Phase 2 | Pending |
@@ -78,6 +78,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | DIST-01 | Phase 4 | Pending |
 
 **Coverage:**
+
 - v1 requirements: 10 total
 - Mapped to phases: 10 ✓
 - Unmapped: 0

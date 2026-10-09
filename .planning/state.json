@@ -6,7 +6,7 @@
     {
       "number": "1",
       "name": "Image Editing",
-      "status": "pending"
+      "status": "complete"
     },
     {
       "number": "2",
@@ -26,8 +26,8 @@
   ],
   "next": {
     "command": "/gsd:progress --next",
-    "label": "Advance to the next step",
-    "reason": "Phase 01 of 4 · 0% · executing"
+    "label": "Advance to the next step (plan phase 2)",
+    "reason": "Phase 2 of 4 — needs a plan"
   },
-  "updated_at": "2026-10-07T13:13:40.199Z"
+  "updated_at": "2026-10-09T11:42:30.218Z"
 }
