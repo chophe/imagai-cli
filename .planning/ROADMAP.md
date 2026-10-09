@@ -9,7 +9,7 @@ Brownfield extension of the existing modular monolith (shared core `src/core.rs`
 ## Phases
 
 - [x] **Phase 1: Image Editing** - Edit an existing image (file path or past result, multi-reference) through the shared core on all three surfaces (completed 2026-10-09)
-- [ ] **Phase 2: Branching & Iteration History** - Persist and expose the iteration lineage: history tree, fork, step-back, cross-surface parity
+- [x] **Phase 2: Branching & Iteration History** - Persist and expose the iteration lineage: history tree, fork, step-back, cross-surface parity (completed 2026-10-10)
 - [ ] **Phase 3: Multi-Vendor Providers** - Named non-OpenAI-compatible provider adapters alongside existing engines, selected per request
 - [ ] **Phase 4: Ship to Users** - Non-zero exit on failure plus single-binary install and provider setup docs
 
@@ -63,13 +63,13 @@ Brownfield extension of the existing modular monolith (shared core `src/core.rs`
 **Plans**: 4 plans
 **Wave 1**
 
-- [ ] 02-01-PLAN.md — The persistence layer: `.imagai-history.json` sidecar store in `src/history.rs` plus the recording hook on `generate_image_core`, so every saved image gets a lineage node (D-08, D-09, D-11, D-20, D-22, D-23)
+- [x] 02-01-PLAN.md — The persistence layer: `.imagai-history.json` sidecar store in `src/history.rs` plus the recording hook on `generate_image_core`, so every saved image gets a lineage node (D-08, D-09, D-11, D-20, D-22, D-23)
 
 **Wave 2** *(blocked on Wave 1 completion; the three plans touch disjoint files and run in parallel)*
 
-- [ ] 02-02-PLAN.md — CLI: `imagai history` ASCII tree + `--json`, `imagai fork --from`, `edit --from` (D-12, D-13, D-14, D-15, D-16, D-17)
-- [ ] 02-03-PLAN.md — TUI: History tab at index 2 with tree + detail panes, ` Pick from history… ` in the Edit tab source picker (D-18)
-- [ ] 02-04-PLAN.md — Web: `GET /api/history`, `POST /api/fork`, SPA history view (D-19)
+- [x] 02-02-PLAN.md — CLI: `imagai history` ASCII tree + `--json`, `imagai fork --from`, `edit --from` (D-12, D-13, D-14, D-15, D-16, D-17)
+- [x] 02-03-PLAN.md — TUI: History tab at index 2 with tree + detail panes, ` Pick from history… ` in the Edit tab source picker (D-18)
+- [x] 02-04-PLAN.md — Web: `GET /api/history`, `POST /api/fork`, SPA history view (D-19)
 
 **Wave structure:** 02-01 (w1) → 02-02 ∥ 02-03 ∥ 02-04 (w2)
 `02-01` creates `src/history.rs` and its public API (`load_view`, `record_result`, `resolve_fork_source`, `HistoryView`), which all three Wave-2 plans consume; each of them touches a disjoint file set (`src/cli.rs`+`tests/cli.rs`, `src/tui.rs`, `src/web.rs`+`web_interface.html`+`tests/web.rs`), so they carry no implicit file-ownership dependency and run in parallel. `02-02`'s `render_history_text` is the reference implementation of the tree grammar that `02-03`'s `history_rows` and `02-04`'s SPA option labels must match.

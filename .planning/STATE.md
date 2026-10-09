@@ -2,18 +2,18 @@
 gsd_state_version: "1.0"
 current_phase: 2
 current_phase_name: Branching & Iteration History
-status: planning
-stopped_at: Phase 01 complete, ready to plan Phase 2
-last_updated: "2026-10-09T11:42:30.192Z"
-last_activity: 2026-10-09
-last_activity_desc: Phase 01 complete, transitioned to Phase 2
+status: phase-complete
+stopped_at: Phase 02 complete (4/4 plans), ready to plan Phase 3
+last_updated: "2026-10-10T01:20:00.000Z"
+last_activity: 2026-10-10
+last_activity_desc: Phase 02 complete, transitioned to Phase 3
 state_head: 6b4b92838ccf2d46c7665b57223cb5fa278b722a
 progress:
   total_phases: 4
-  completed_phases: 1
-  total_plans: 5
-  completed_plans: 5
-  percent: 25
+  completed_phases: 2
+  total_plans: 9
+  completed_plans: 9
+  percent: 50
 ---
 
 # Project State
@@ -23,22 +23,22 @@ progress:
 See: .planning/PROJECT.md (updated 2026-10-09)
 
 **Core value:** One command → one generated or edited image, from any surface, against any configured provider — with the iteration history preserved so users can branch instead of starting over.
-**Current focus:** Phase 2 — Branching & Iteration History
+**Current focus:** Phase 2 — Branching & Iteration History (complete; Phase 3 next)
 
 ## Current Position
 
 Phase: 2 — Branching & Iteration History
-Plan: Not started
-Status: Ready to plan
-Last activity: 2026-10-09 — Phase 01 complete, transitioned to Phase 2
+Plan: 4/4 complete (02-01, 02-02, 02-03, 02-04)
+Status: Complete
+Last activity: 2026-10-10 — Phase 02 complete, transitioned to Phase 3
 
-Progress: [███░░░░░░░] 25%
+Progress: [█████░░░░░] 50%
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 5
+- Total plans completed: 9
 - Average duration: -
 - Total execution time: 0 hours
 
@@ -47,6 +47,7 @@ Progress: [███░░░░░░░] 25%
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
 | 01 | 5 | - | - |
+| 02 | 4 | ~110m | ~27m/plan |
 
 **Recent Trend:**
 
@@ -62,6 +63,11 @@ Progress: [███░░░░░░░] 25%
 Decisions are logged in PROJECT.md Key Decisions table.
 Recent decisions affecting current work:
 
+- [Phase 2]: D-08 sidecar history store — one `.imagai-history.json` inside `output_dir`, read-modify-write per save, no locking/journal/compaction
+- [Phase 2]: D-09/D-10 lineage derivation — a plain generation is a root, an edit is the child of the node matching its source filename, pre-existing files are lazily adopted
+- [Phase 2]: D-12/D-13 fork — any past image is forkable by node id, recorded filename or path; a fork references the same file and keeps the `-edit` naming scheme
+- [Phase 2]: D-17/D-19 shared grammar — one `history::history_row_text` renders the CLI tree, the TUI rows and the SPA option labels; one `HistoryView` serializer feeds CLI `--json` and `/api/history`
+- [Phase 2]: D-20/D-23 truthfulness — a node whose file vanished stays in the tree marked `missing`, and only filenames relative to `output_dir` are recorded
 - [Roadmap]: 4 coarse phases — Editing → Branching → Providers → Ship; video (VID-01) stays v2
 - [Roadmap]: ROB-01 + DIST-01 grouped as "Ship to Users" (release readiness)
 - [Phase 1]: D-03 auto-pick — omitted `--image` uses newest output image, printed before request; explicit path always wins
@@ -75,8 +81,8 @@ None yet.
 
 ### Blockers/Concerns
 
-- [Phase 2]: No persistence layer exists (images are the only output) — iteration history needs a new local store (e.g. sidecar metadata / manifest in `output_dir`)
-- [Phase 2]: `created`/`modified` gallery timestamps both derive from mtime — recorded bug, owned by a future phase
+- `created`/`modified` gallery timestamps both derive from mtime — recorded bug, owned by a future phase (Phase 2 shipped real node timestamps in `.imagai-history.json`; the gallery display is untouched)
+- History has no prune/delete/gc surface (D-21 defers it) and a hand-edited sidecar's `../` filename is reduced to its final component before any join (T-02-01)
 
 ## Deferred Items
 
@@ -86,6 +92,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-10-09
-Stopped at: Phase 01 complete, ready to plan Phase 2
+Last session: 2026-10-10
+Stopped at: Phase 02 complete (4/4 plans), ready to plan Phase 3
 Resume file: None

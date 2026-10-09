@@ -15,10 +15,10 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### Branching
 
-- [ ] **BRCH-01**: User can view the iteration history tree of a generation session
-- [ ] **BRCH-02**: User can fork any past image into a new edit while keeping the original lineage
-- [ ] **BRCH-03**: User can step back to a prior branch point
-- [ ] **BRCH-04**: Editing and branching work identically on CLI, TUI, and web
+- [x] **BRCH-01**: User can view the iteration history tree of a generation session
+- [x] **BRCH-02**: User can fork any past image into a new edit while keeping the original lineage
+- [x] **BRCH-03**: User can step back to a prior branch point
+- [x] **BRCH-04**: Editing and branching work identically on CLI, TUI, and web
 
 ### Providers
 
@@ -69,10 +69,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 | EDIT-01 | Phase 1 | Complete |
 | EDIT-02 | Phase 1 | Complete |
 | EDIT-03 | Phase 1 | Complete |
-| BRCH-01 | Phase 2 | Pending |
-| BRCH-02 | Phase 2 | Pending |
-| BRCH-03 | Phase 2 | Pending |
-| BRCH-04 | Phase 2 | Pending |
+| BRCH-01 | Phase 2 | Complete |
+| BRCH-02 | Phase 2 | Complete |
+| BRCH-03 | Phase 2 | Complete |
+| BRCH-04 | Phase 2 | Complete |
 | PRVD-01 | Phase 3 | Pending |
 | ROB-01 | Phase 4 | Pending |
 | DIST-01 | Phase 4 | Pending |
