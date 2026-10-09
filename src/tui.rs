@@ -5,13 +5,14 @@ use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Paragraph};
+use ratatui::widgets::{Block, Paragraph, Wrap};
 use ratatui::DefaultTerminal;
 use ratatui::Frame;
 use tokio::sync::mpsc;
 
 use crate::config::Settings;
 use crate::core::generate_image_core;
+use crate::history;
 use crate::models::ImageGenerationRequest;
 
 const ROWS: usize = 11;
@@ -34,7 +35,47 @@ const EDIT_ROW_ENGINE: usize = 2;
 const EDIT_ROW_OUTPUT: usize = 3;
 const EDIT_ROW_SUBMIT: usize = 4;
 
-const TABS: [&str; 4] = ["Generate", "Edit", "Engines", "About"];
+// History sits at index 2, between Edit and Engines, because forking always
+// continues in the Edit tab. HAZARD: inserting a tab here means re-indexing
+// both `draw`'s and `draw_footer`'s dispatch — they go through `tab_surface`,
+// which is exhaustive over 0..=4 with no catch-all arm so a future tab cannot
+// silently land on About (T-02-08).
+const TABS: [&str; 5] = ["Generate", "Edit", "History", "Engines", "About"];
+
+/// The History tab's key hints (the Copywriting Contract's footer line).
+const HISTORY_FOOTER_HINT: &str =
+    "q Quit | Tab switch tab | ↑/↓ navigate | Enter fork from node | p pick from history";
+
+/// The first entry of the Edit tab's source picker (D-18).
+const PICK_FROM_HISTORY: &str = " Pick from history… ";
+
+/// A tree deeper than this is not descended into, so a corrupted sidecar
+/// cannot produce an unbounded recursion in the flattener.
+const MAX_HISTORY_DEPTH: usize = 64;
+
+/// The surface a tab index renders. Extracted from `draw`'s match so the tab
+/// table is exhaustive and provable in a unit test without a terminal: an
+/// out-of-range index yields `None` and renders nothing, rather than silently
+/// falling through to About (T-02-08).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TabSurface {
+    Generate,
+    Edit,
+    History,
+    Engines,
+    About,
+}
+
+fn tab_surface(tab: usize) -> Option<TabSurface> {
+    match tab {
+        0 => Some(TabSurface::Generate),
+        1 => Some(TabSurface::Edit),
+        2 => Some(TabSurface::History),
+        3 => Some(TabSurface::Engines),
+        4 => Some(TabSurface::About),
+        _ => None,
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LogKind {
@@ -49,11 +90,47 @@ struct LogLine {
     text: String,
 }
 
+/// What a picker selection means. The Edit tab's picker either writes the
+/// chosen file into `edit_source`, or — on its first row — hands off to the
+/// History tab. The discriminator is this field on the one picker type, not a
+/// second overlay (UI-SPEC rule 3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PickerOrigin {
+    /// A plain source choice: the first row is ` Pick from history… `.
+    Source,
+    /// Opened while a pick from history was already pending: the picker lists
+    /// files only, because the hand-off row has already been used.
+    History,
+}
+
 struct PickerState {
     entries: Vec<String>,
     selected: usize,
     scroll: usize,
     height: usize,
+    origin: PickerOrigin,
+}
+
+/// The History tab's state: the loaded view, the flattened rows, and the
+/// `selected`/`scroll`/`height` triple the picker uses (UI-SPEC rule 3 — one
+/// scrolling idiom, not a second). `loaded` is the refresh flag: the view is
+/// (re)loaded on entering the tab and after a successful edit or generation, so
+/// a fork's new node appears without restarting the TUI.
+struct HistoryState {
+    rows: Vec<HistoryRow>,
+    selected: usize,
+    scroll: usize,
+    height: usize,
+    loaded: bool,
+}
+
+/// One row of the flattened tree: the rendered line plus the payload the Node
+/// detail pane shows. `filename`/`node` are `None` for a row that carries no
+/// node (the `… n more` line and the empty-state row).
+#[derive(Clone)]
+struct HistoryRow {
+    line: Line<'static>,
+    node: Option<history::HistoryNode>,
 }
 
 /// A minimal single-line text editor with a byte-indexed cursor.
@@ -130,6 +207,8 @@ struct App {
     edit_editing: Option<usize>,
     edit_picker: Option<PickerState>,
     edit_refs_editing: bool,
+    history: Option<HistoryState>,
+    history_pick_for_edit: bool,
 
     prompt: String,
     engine: String,
@@ -172,6 +251,8 @@ impl App {
             edit_editing: None,
             edit_picker: None,
             edit_refs_editing: false,
+            history: None,
+            history_pick_for_edit: false,
             prompt: String::new(),
             engine: settings.default_engine.clone().unwrap_or_default(),
             size: "1024x1024".to_string(),
@@ -556,15 +637,19 @@ impl App {
         if let Some(results) = results {
             self.generating = false;
             self.rx = None;
+            let mut saved = false;
             for (i, r) in results.iter().enumerate() {
                 if let Some(e) = &r.error {
                     self.push_log(LogKind::Error, format!("Image {} error: {e}", i + 1));
                 } else if let Some(p) = &r.saved_path {
+                    // The hook in `generate_image_core` recorded a node for
+                    // this result, so the tree gains it here.
+                    saved = true;
                     self.push_log(LogKind::Success, format!("✅ Image {} saved to {p}", i + 1));
                 } else if let Some(u) = &r.image_url {
                     self.push_log(LogKind::Info, format!("Image {} URL: {u}", i + 1));
                 } else if let Some(t) = &r.text_content {
-                    self.push_log(LogKind::Info, format!("💬 Model response: {t}"));
+                    self.push_log(LogKind::Info, format!("💬 Model response: {t}",));
                 } else {
                     self.push_log(LogKind::Warn, format!("Image {}: no payload.", i + 1));
                 }
@@ -574,6 +659,11 @@ impl App {
             } else {
                 "Generation finished".to_string()
             };
+            // A saved result refreshes the tree without a restart; a failed one
+            // leaves the view alone and lets the error log speak.
+            if saved {
+                self.load_history();
+            }
         }
     }
 
@@ -582,6 +672,9 @@ impl App {
     fn handle_key(&mut self, code: KeyCode) -> bool {
         if self.edit_picker.is_some() {
             return self.handle_picker_key(code);
+        }
+        if self.tab == 2 {
+            return self.handle_history_key(code);
         }
         if self.tab == 1 {
             return self.handle_edit_key(code);
@@ -792,7 +885,7 @@ impl App {
     }
 
     fn open_source_picker(&mut self) {
-        let entries: Vec<String> = crate::utils::list_output_images(&self.settings.output_dir)
+        let images: Vec<String> = crate::utils::list_output_images(&self.settings.output_dir)
             .into_iter()
             .map(|p| {
                 p.file_name()
@@ -800,19 +893,58 @@ impl App {
                     .unwrap_or_default()
             })
             .collect();
-        if entries.is_empty() {
+        if images.is_empty() {
             self.push_log(
                 LogKind::Warn,
                 "No images found in the output directory — generate one first".to_string(),
             );
             return;
         }
+        // With no pick pending the first row hands off to the History tab
+        // (D-18); while a pick is already pending that row would loop, so the
+        // picker lists files only.
+        let origin = if self.history_pick_for_edit {
+            PickerOrigin::History
+        } else {
+            PickerOrigin::Source
+        };
+        let mut entries = Vec::with_capacity(images.len() + 1);
+        if origin == PickerOrigin::Source {
+            entries.push(PICK_FROM_HISTORY.to_string());
+        }
+        entries.extend(images);
         self.edit_picker = Some(PickerState {
             entries,
             selected: 0,
             scroll: 0,
             height: 0,
+            origin,
         });
+    }
+
+    /// Move `selected` by `delta` and keep `scroll` in step. One scroller, two
+    /// callers: the Edit tab's source picker and the History tab's tree — the
+    /// clamping, the scroll-window arithmetic and the tail clamp are identical
+    /// because they are the same function.
+    fn scroll_selection(
+        selected: &mut usize,
+        scroll: &mut usize,
+        height: usize,
+        len: usize,
+        delta: isize,
+    ) {
+        if len == 0 {
+            return;
+        }
+        *selected = (*selected as isize + delta).clamp(0, len as isize - 1) as usize;
+        let height = height.max(1);
+        if *selected < *scroll {
+            *scroll = *selected;
+        } else if *selected >= *scroll + height {
+            *scroll = *selected + 1 - height;
+        }
+        let max_scroll = len.saturating_sub(height);
+        *scroll = (*scroll).min(max_scroll);
     }
 
     fn picker_move(&mut self, delta: isize) {
@@ -823,36 +955,315 @@ impl App {
             return;
         }
         let len = picker.entries.len();
-        picker.selected = (picker.selected as isize + delta).clamp(0, len as isize - 1) as usize;
-        let height = picker.height.max(1);
-        if picker.selected < picker.scroll {
-            picker.scroll = picker.selected;
-        } else if picker.selected >= picker.scroll + height {
-            picker.scroll = picker.selected + 1 - height;
-        }
-        let max_scroll = len.saturating_sub(picker.height);
-        picker.scroll = picker.scroll.min(max_scroll);
+        Self::scroll_selection(
+            &mut picker.selected,
+            &mut picker.scroll,
+            picker.height,
+            len,
+            delta,
+        );
     }
 
     fn picker_select(&mut self) {
-        let Some(picker) = self.edit_picker.as_ref() else {
-            return;
+        let (index, name, origin) = {
+            let Some(picker) = self.edit_picker.as_ref() else {
+                return;
+            };
+            if picker.entries.is_empty() {
+                self.edit_picker = None;
+                return;
+            }
+            let index = picker.selected.min(picker.entries.len() - 1);
+            (index, picker.entries[index].clone(), picker.origin)
         };
-        if picker.entries.is_empty() {
+        if index == 0 && origin == PickerOrigin::Source {
+            // The history row: choosing it means "pick a node from the tree",
+            // so the picker hands off instead of writing a source.
             self.edit_picker = None;
+            self.open_history_pick();
             return;
         }
-        let name = picker.entries[picker.selected.min(picker.entries.len() - 1)].clone();
         self.edit_source = name.clone();
         if self.edit_editing == Some(EDIT_ROW_SOURCE) {
             self.edit_editing = None;
         }
         self.edit_picker = None;
+        // Completing a pick that started on the History tab.
+        self.history_pick_for_edit = false;
         self.push_log(LogKind::Info, format!("Source image: {name}"));
     }
 
     fn picker_cancel(&mut self) {
         self.edit_picker = None;
+    }
+
+    // ---- history tab ----
+
+    /// Load the lineage view and rebuild the flattened rows.
+    ///
+    /// An unreadable store is reported through the log pane — never `unwrap`,
+    /// and never a silent empty tree (the Copywriting Contract's third error
+    /// sentence arrives verbatim from `history::read_records`); the previous
+    /// state stays on screen.
+    fn load_history(&mut self) {
+        match history::load_view(&self.settings.output_dir) {
+            Ok(view) => {
+                let missing = view.missing;
+                let rows = history_rows(&view);
+                let height = self.history.as_ref().map(|h| h.height).unwrap_or(0);
+                self.history = Some(HistoryState {
+                    rows,
+                    selected: 0,
+                    scroll: 0,
+                    height,
+                    loaded: true,
+                });
+                if missing > 0 {
+                    self.push_log(
+                        LogKind::Warn,
+                        format!(
+                            "{missing} history node(s) point at files no longer in the output directory"
+                        ),
+                    );
+                }
+            }
+            Err(e) => {
+                self.push_log(LogKind::Error, e.to_string());
+            }
+        }
+    }
+
+    fn history_move(&mut self, delta: isize) {
+        let Some(state) = self.history.as_mut() else {
+            return;
+        };
+        let len = state.rows.len();
+        Self::scroll_selection(
+            &mut state.selected,
+            &mut state.scroll,
+            state.height,
+            len,
+            delta,
+        );
+    }
+
+    /// Fork from the selected node: put its filename in the Edit tab's source
+    /// field, switch to the Edit tab, and push the exact log `picker_select`
+    /// emits so the two paths are indistinguishable to the user (D-18).
+    ///
+    /// A node whose file is gone is refused with the Copywriting Contract's
+    /// deleted-file sentence, and a filename carrying a separator is reduced to
+    /// its final component before it reaches `edit_source` (T-02-07) — the same
+    /// reduction `build_edit_request` applies when it joins onto `output_dir`.
+    fn history_select(&mut self) {
+        let Some(node) = self
+            .history
+            .as_ref()
+            .and_then(|h| h.rows.get(h.selected))
+            .and_then(|row| row.node.clone())
+        else {
+            // A `… n more` line or the empty-state row carries no node.
+            return;
+        };
+        let filename = std::path::Path::new(&node.filename)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(String::from);
+        match filename {
+            Some(filename) if !node.missing => {
+                self.edit_source = filename.clone();
+                self.tab = 1;
+                self.history_pick_for_edit = false;
+                self.push_log(LogKind::Info, format!("Source image: {filename}"));
+            }
+            _ => {
+                let dir = self.settings.output_dir.to_string_lossy().to_string();
+                self.push_log(
+                    LogKind::Error,
+                    format!(
+                        "History node {} points at '{}', which is no longer in {dir}.",
+                        node.id, node.filename
+                    ),
+                );
+            }
+        }
+    }
+
+    /// The Edit tab's picker asked to pick from history: show the tree and mark
+    /// that a pick is pending.
+    fn open_history_pick(&mut self) {
+        self.tab = 2;
+        self.history_pick_for_edit = true;
+        self.load_history();
+    }
+
+    fn handle_history_key(&mut self, code: KeyCode) -> bool {
+        match code {
+            KeyCode::Up | KeyCode::Char('k') => self.history_move(-1),
+            KeyCode::Down | KeyCode::Char('j') => self.history_move(1),
+            KeyCode::Enter => self.history_select(),
+            // UI-SPEC: `p` forks via the Edit-tab picker path — go there with
+            // the pick still pending, so choosing a source completes the flow.
+            KeyCode::Char('p') => {
+                self.tab = 1;
+                self.open_source_picker();
+            }
+            KeyCode::Esc => {
+                // Leaving without a choice must not touch `edit_source`.
+                if self.history_pick_for_edit {
+                    self.tab = 1;
+                    self.history_pick_for_edit = false;
+                }
+            }
+            KeyCode::Char('q') => return true,
+            _ => {}
+        }
+        false
+    }
+
+    fn draw_history_tab(&mut self, frame: &mut Frame, area: Rect) {
+        // First frame on this tab loads the view; `load_history` refreshes it
+        // after a generation or edit.
+        if self.history.as_ref().map(|h| !h.loaded).unwrap_or(true) {
+            self.load_history();
+        }
+        let layout = Layout::horizontal([Constraint::Percentage(55), Constraint::Percentage(45)])
+            .split(area);
+        self.draw_history_tree(frame, layout[0]);
+        self.draw_history_detail(frame, layout[1]);
+    }
+
+    fn draw_history_tree(&mut self, frame: &mut Frame, area: Rect) {
+        let (rows, selected, scroll) = {
+            let Some(state) = self.history.as_ref() else {
+                return;
+            };
+            (state.rows.clone(), state.selected, state.scroll)
+        };
+        let visible = area.height.saturating_sub(2) as usize;
+        if visible == 0 {
+            return;
+        }
+        let len = rows.len();
+        let start = scroll.min(len.saturating_sub(1));
+        let end = (start + visible).min(len);
+        if let Some(state) = self.history.as_mut() {
+            state.height = visible;
+        }
+        let block = Block::bordered().title(" History ");
+        if len == 0 {
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    "No history yet — generate or edit an image first.",
+                    Style::default().fg(Color::DarkGray),
+                )))
+                .block(block),
+                area,
+            );
+            return;
+        }
+        let mut lines: Vec<Line> = Vec::with_capacity(end - start + 1);
+        for (i, row) in rows[start..end].iter().enumerate() {
+            let selected_here = start + i == selected;
+            let mut spans = Vec::with_capacity(row.line.spans.len() + 1);
+            let style = if selected_here {
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Gray)
+            };
+            spans.push(Span::styled(
+                if selected_here { "▶ " } else { "  " }.to_string(),
+                style,
+            ));
+            for span in &row.line.spans {
+                spans.push(Span::styled(span.content.to_string(), style));
+            }
+            lines.push(Line::from(spans));
+        }
+        if let Some(remaining) = remaining_line(end, len) {
+            lines.push(Line::from(Span::styled(
+                remaining,
+                Style::default().fg(Color::DarkGray),
+            )));
+        }
+        frame.render_widget(Paragraph::new(Text::from(lines)).block(block), area);
+    }
+
+    fn draw_history_detail(&mut self, frame: &mut Frame, area: Rect) {
+        let block = Block::bordered().title(" Node ");
+        let Some(node) = self
+            .history
+            .as_ref()
+            .and_then(|h| h.rows.get(h.selected))
+            .and_then(|row| row.node.clone())
+        else {
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    "No node selected",
+                    Style::default().fg(Color::DarkGray),
+                )))
+                .block(block),
+                area,
+            );
+            return;
+        };
+
+        let label_w = 10usize;
+        let label_style = Style::default().fg(Color::Gray);
+        let value_style = Style::default().fg(Color::White);
+        let row = |label: &str, value: String, style: Style| -> Line<'static> {
+            Line::from(vec![
+                Span::styled(format!("{:<label_w$}", label), label_style),
+                Span::raw("  "),
+                Span::styled(value, style),
+            ])
+        };
+
+        let mut lines: Vec<Line> = Vec::new();
+        lines.push(row("id", node.id.clone(), value_style));
+        if node.missing {
+            lines.push(row(
+                "file",
+                format!("✗ {} (missing from disk)", node.filename),
+                Style::default().fg(Color::Yellow),
+            ));
+        } else {
+            lines.push(row("file", node.filename.clone(), value_style));
+        }
+        let prompt = if node.prompt.is_empty() {
+            "(unknown prompt)".to_string()
+        } else {
+            node.prompt.clone()
+        };
+        lines.push(row("prompt", prompt, value_style));
+        let model = if node.model.is_empty() {
+            "(unknown model)".to_string()
+        } else {
+            node.model.clone()
+        };
+        lines.push(row("model", model, value_style));
+        lines.push(row("created", node.created.clone(), value_style));
+        lines.push(row(
+            "parent",
+            node.parent.clone().unwrap_or_else(|| "—".to_string()),
+            value_style,
+        ));
+        lines.push(row(
+            "children",
+            node.children.len().to_string(),
+            value_style,
+        ));
+        lines.push(Line::from(""));
+        // The one CTA of this surface (Copywriting Contract).
+        lines.push(Line::from(Span::styled(
+            " [ Fork edit ] ",
+            Style::default().fg(Color::Green),
+        )));
+
+        let paragraph = Paragraph::new(Text::from(lines)).wrap(Wrap { trim: true });
+        frame.render_widget(paragraph.block(block), area);
     }
 
     fn handle_picker_key(&mut self, code: KeyCode) -> bool {
@@ -878,11 +1289,16 @@ impl App {
         .split(area);
 
         self.draw_header(frame, layout[0]);
-        match self.tab {
-            0 => self.draw_generate_tab(frame, layout[1]),
-            1 => self.draw_edit_tab(frame, layout[1]),
-            2 => self.draw_engines_tab(frame, layout[1]),
-            _ => self.draw_about_tab(frame, layout[1]),
+        match tab_surface(self.tab) {
+            Some(TabSurface::Generate) => self.draw_generate_tab(frame, layout[1]),
+            Some(TabSurface::Edit) => self.draw_edit_tab(frame, layout[1]),
+            Some(TabSurface::History) => self.draw_history_tab(frame, layout[1]),
+            Some(TabSurface::Engines) => self.draw_engines_tab(frame, layout[1]),
+            Some(TabSurface::About) => self.draw_about_tab(frame, layout[1]),
+            // An out-of-range index renders nothing rather than the wrong
+            // surface: `self.tab` is always `% TABS.len()`, so this arm is
+            // unreachable in practice and exists only for exhaustiveness.
+            None => {}
         }
         self.draw_footer(frame, layout[2]);
     }
@@ -1462,35 +1878,83 @@ impl App {
     }
 
     fn draw_footer(&mut self, frame: &mut Frame, area: Rect) {
-        let mut keys = match self.tab {
-            0 => {
-                if self.editing.is_some() {
-                    "Esc done | ←/→ move | Backspace del | type to insert".to_string()
-                } else {
-                    "q Quit | Tab switch tab | ↑/↓ navigate | Enter edit/Generate | Space toggle"
-                        .to_string()
-                }
-            }
-            1 => {
-                if self.edit_picker.is_some() {
-                    "↑/↓ move | Enter select | Esc cancel".to_string()
-                } else if self.edit_editing.is_some() || self.edit_refs_editing {
-                    "Esc done | ←/→ move | Backspace del | type to insert".to_string()
-                } else {
-                    "q Quit | Tab switch tab | ↑/↓ navigate | Enter edit/Edit | e edit source path | Space toggle"
-                        .to_string()
-                }
-            }
-            2 => "q Quit | Tab switch tab | f fetch models".to_string(),
-            _ => "q Quit | Tab switch tab".to_string(),
-        };
-        keys.push_str(&format!("   |  {}", self.status));
+        let keys = tab_footer_hints(
+            self.tab,
+            self.editing.is_some(),
+            self.edit_picker.is_some(),
+            self.edit_editing.is_some() || self.edit_refs_editing,
+        );
+        let keys = format!("{keys}   |  {}", self.status);
         let style = Style::default().fg(Color::DarkGray);
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(keys, style))).alignment(Alignment::Left),
             area,
         );
     }
+}
+
+/// The key hints for a tab. Extracted from `draw_footer` so the per-tab match
+/// is exhaustive over 0..=4 with no catch-all arm (T-02-08) and is testable
+/// without a terminal.
+fn tab_footer_hints(tab: usize, editing: bool, picker_open: bool, field_editing: bool) -> String {
+    match tab_surface(tab) {
+        Some(TabSurface::Generate) => {
+            if editing {
+                "Esc done | ←/→ move | Backspace del | type to insert".to_string()
+            } else {
+                "q Quit | Tab switch tab | ↑/↓ navigate | Enter edit/Generate | Space toggle"
+                    .to_string()
+            }
+        }
+        Some(TabSurface::Edit) => {
+            if picker_open {
+                "↑/↓ move | Enter select | Esc cancel".to_string()
+            } else if field_editing {
+                "Esc done | ←/→ move | Backspace del | type to insert".to_string()
+            } else {
+                "q Quit | Tab switch tab | ↑/↓ navigate | Enter edit/Edit | e edit source path | Space toggle"
+                    .to_string()
+            }
+        }
+        Some(TabSurface::History) => HISTORY_FOOTER_HINT.to_string(),
+        Some(TabSurface::Engines) => "q Quit | Tab switch tab | f fetch models".to_string(),
+        Some(TabSurface::About) => "q Quit | Tab switch tab".to_string(),
+        None => String::new(),
+    }
+}
+
+/// Flatten the view's trees depth-first, in the order the CLI renderer walks
+/// them: roots newest-first and children oldest-first, which is the order
+/// `history::load_view` already built (02-02-PLAN.md — one shared
+/// `history::HistoryView`, one output order). Each row uses the same
+/// connector/indent/`✗ `/id8/prompt-field grammar as `render_history_text`
+/// because both call `history::history_row_text`.
+fn flatten_nodes(nodes: &[history::HistoryNode], depth: usize, out: &mut Vec<HistoryRow>) {
+    if depth >= MAX_HISTORY_DEPTH {
+        return;
+    }
+    let last = nodes.len().saturating_sub(1);
+    for (i, node) in nodes.iter().enumerate() {
+        let is_last = i == last;
+        out.push(HistoryRow {
+            line: Line::from(history::history_row_text(node, depth, is_last)),
+            node: Some(node.clone()),
+        });
+        flatten_nodes(&node.children, depth + 1, out);
+    }
+}
+
+/// The flattened rows of a whole view — pure, so the tree grammar and the
+/// scroll window are unit-testable without a terminal.
+fn history_rows(view: &history::HistoryView) -> Vec<HistoryRow> {
+    let mut rows = Vec::new();
+    flatten_nodes(&view.roots, 0, &mut rows);
+    rows
+}
+
+/// The trailing `… {n} more` line when a list is clipped; `None` otherwise.
+fn remaining_line(shown: usize, total: usize) -> Option<String> {
+    (shown < total).then(|| format!("… {} more", total - shown))
 }
 
 /// Render a text value line with an optional block cursor.
@@ -1554,6 +2018,9 @@ impl App {
                         && !self.edit_refs_editing
                     {
                         self.tab = (self.tab + 1) % TABS.len();
+                        if self.tab == 2 {
+                            self.load_history();
+                        }
                         continue;
                     }
                     if code == KeyCode::BackTab
@@ -1565,8 +2032,8 @@ impl App {
                         self.tab = (self.tab + TABS.len() - 1) % TABS.len();
                         continue;
                     }
-                    // 'f' fetches models on the engines tab.
-                    if code == KeyCode::Char('f') && self.tab == 2 && self.editing.is_none() {
+                    // 'f' fetches models on the engines tab (index 3).
+                    if code == KeyCode::Char('f') && self.tab == 3 && self.editing.is_none() {
                         self.fetch_models();
                         continue;
                     }
@@ -1632,6 +2099,278 @@ mod tests {
         assert_eq!(labels, vec!["Source", "Change", "Engine", "Output", "Edit"]);
     }
 
+    /// Plain text of a history row, so the built lines can be asserted.
+    fn row_text(row: &HistoryRow) -> String {
+        row.line
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect::<String>()
+    }
+
+    fn row_texts(rows: &[HistoryRow]) -> Vec<String> {
+        rows.iter().map(row_text).collect()
+    }
+
+    /// Seed a sidecar into `dir` and load the real view through it, so the
+    /// tests exercise the store rather than a hand-built struct.
+    fn seeded_view(dir: &std::path::Path) -> history::HistoryView {
+        use base64::Engine;
+        std::fs::write(
+            dir.join(".imagai-history.json"),
+            serde_json::to_string(&[
+                serde_json::json!({
+                    "id": "1a2b3c4d", "parent": null, "filename": "cat.png",
+                    "prompt": "a cat wearing a hat", "model": "dall-e-3",
+                    "created": "2026-10-09T11:40:00"
+                }),
+                serde_json::json!({
+                    "id": "2b3c4d5e", "parent": "1a2b3c4d", "filename": "cat-edit.png",
+                    "prompt": "make it sunset", "model": "gpt-image-1",
+                    "created": "2026-10-09T11:41:00"
+                }),
+                serde_json::json!({
+                    "id": "3c4d5e6f", "parent": "1a2b3c4d", "filename": "cat-edit-1.png",
+                    "prompt": "add a party hat", "model": "gpt-image-1",
+                    "created": "2026-10-09T11:42:00"
+                }),
+            ])
+            .expect("serialize store"),
+        )
+        .expect("seed sidecar");
+        // One PNG so the first node reads as present; the other two are missing.
+        let png = base64::engine::general_purpose::STANDARD
+            .decode(PIXEL_PNG_B64)
+            .expect("decode PIXEL_PNG_B64");
+        std::fs::write(dir.join("cat.png"), png).expect("seed png");
+        history::load_view(dir).expect("view")
+    }
+
+    #[test]
+    fn tabs_has_history_at_index_two() {
+        assert_eq!(TABS.len(), 5, "Generate, Edit, History, Engines, About");
+        assert_eq!(TABS[2], "History");
+        // Both dispatchers cover 0..=4 explicitly, with no catch-all arm
+        // (T-02-08); an out-of-range index has no surface rather than About.
+        for (tab, name) in TABS.iter().enumerate() {
+            assert!(
+                tab_surface(tab).is_some(),
+                "tab {tab} ({name}) has a renderer"
+            );
+        }
+        assert!(
+            tab_surface(5).is_none(),
+            "no surface for an out-of-range tab"
+        );
+        assert_eq!(tab_surface(2), Some(TabSurface::History));
+        assert_eq!(tab_surface(4), Some(TabSurface::About));
+        // The History tab's footer hint is the contract string, and the other
+        // tabs keep theirs.
+        assert_eq!(
+            tab_footer_hints(2, false, false, false),
+            HISTORY_FOOTER_HINT
+        );
+        assert_eq!(
+            tab_footer_hints(3, false, false, false),
+            "q Quit | Tab switch tab | f fetch models"
+        );
+        assert_eq!(
+            tab_footer_hints(4, false, false, false),
+            "q Quit | Tab switch tab"
+        );
+    }
+
+    #[test]
+    fn history_tree_lines_use_the_contract_connectors() {
+        let tmp = TempDir::new().unwrap();
+        let view = seeded_view(tmp.path());
+        let rows = history_rows(&view);
+        let texts = row_texts(&rows);
+        assert_eq!(texts.len(), 3, "root plus two children");
+        // Depth 0: no connector.
+        assert!(
+            texts[0].starts_with("1a2b3c4d  "),
+            "no connector at depth 0: {:?}",
+            texts[0]
+        );
+        // Non-last child: three spaces of indent plus `+- `.
+        assert!(
+            texts[1].starts_with("   +- ✗ 2b3c4d5e"),
+            "non-last connector, then the missing marker: {:?}",
+            texts[1]
+        );
+        // Last child: three spaces of indent plus `` `- ``.
+        assert!(
+            texts[2].starts_with("   `- ✗ 3c4d5e6f"),
+            "last-child connector, then the missing marker: {:?}",
+            texts[2]
+        );
+        // The prompt column is a fixed 32-character field, and the timestamp
+        // renders as YYYY-MM-DD HH:MM.
+        assert!(texts[0].contains("a cat wearing a hat"));
+        assert!(texts[0].ends_with("2026-10-09 11:40"), "{:?}", texts[0]);
+        assert!(texts[0].contains("cat.png"), "{:?}", texts[0]);
+    }
+
+    #[test]
+    fn history_tree_marks_missing_nodes() {
+        let tmp = TempDir::new().unwrap();
+        let view = seeded_view(tmp.path());
+        let texts = row_texts(&history_rows(&view));
+        // cat.png exists, so the root is not marked; the two children are.
+        assert!(!texts[0].contains("✗ "), "root present: {:?}", texts[0]);
+        for text in &texts[1..] {
+            let marker = text.find("✗ ").expect("missing marker");
+            let id = text
+                .find("2b3c")
+                .or_else(|| text.find("3c4d"))
+                .expect("id8");
+            assert!(marker < id, "✗ sits before the id8: {:?}", text);
+        }
+    }
+
+    #[test]
+    fn history_scroll_marks_remaining_rows() {
+        let tmp = TempDir::new().unwrap();
+        let view = seeded_view(tmp.path());
+        let rows = history_rows(&view);
+        // One row visible out of three: two remain.
+        assert_eq!(remaining_line(1, rows.len()), Some("… 2 more".to_string()));
+        // Nothing clipped means no trailing line at all.
+        assert_eq!(remaining_line(rows.len(), rows.len()), None);
+    }
+
+    #[test]
+    fn history_enter_forks_selected_node_into_edit() {
+        let tmp = TempDir::new().unwrap();
+        seed_png(tmp.path(), "cat.png");
+        std::fs::write(
+            tmp.path().join(".imagai-history.json"),
+            serde_json::to_string(&[serde_json::json!({
+                "id": "1a2b3c4d", "parent": null, "filename": "cat.png",
+                "prompt": "a cat", "model": "dall-e-3", "created": "2026-10-09T11:40:00"
+            })])
+            .expect("serialize store"),
+        )
+        .expect("seed sidecar");
+        let settings = edit_test_settings(tmp.path());
+        let mut app = App::new(&settings);
+        app.load_history();
+        assert!(
+            !app.handle_history_key(KeyCode::Enter),
+            "Enter does not quit"
+        );
+        assert_eq!(app.edit_source, "cat.png");
+        assert_eq!(app.tab, 1);
+        let last = app.logs.last().expect("info logged");
+        assert_eq!(last.text, "Source image: cat.png");
+    }
+
+    #[test]
+    fn history_enter_refuses_missing_node() {
+        let tmp = TempDir::new().unwrap();
+        let view = seeded_view(tmp.path());
+        assert!(view.missing > 0, "the fixture has missing nodes");
+        let settings = edit_test_settings(tmp.path());
+        let mut app = App::new(&settings);
+        app.tab = 2;
+        app.load_history();
+        // Select the first child, whose file is gone.
+        app.history_move(1);
+        app.edit_source = "keep-me.png".to_string();
+        assert!(
+            !app.handle_history_key(KeyCode::Enter),
+            "Enter does not quit"
+        );
+        let last = app.logs.last().expect("error logged");
+        assert!(
+            last.text.contains("no longer in"),
+            "contract sentence: {}",
+            last.text
+        );
+        assert_eq!(app.edit_source, "keep-me.png", "source untouched");
+        assert_eq!(app.tab, 2, "stays on the History tab");
+    }
+
+    #[test]
+    fn picker_history_entry_moves_to_history_tab() {
+        let tmp = TempDir::new().unwrap();
+        seed_png(tmp.path(), "seed_a.png");
+        let settings = edit_test_settings(tmp.path());
+        let mut app = App::new(&settings);
+        app.edit_source = "keep-me.png".to_string();
+        app.open_source_picker();
+        let entries = app
+            .edit_picker
+            .as_ref()
+            .expect("picker open")
+            .entries
+            .clone();
+        assert_eq!(
+            entries[0], PICK_FROM_HISTORY,
+            "the history row is the picker's first entry"
+        );
+        assert!(
+            !app.handle_picker_key(KeyCode::Enter),
+            "Enter does not quit"
+        );
+        assert_eq!(app.tab, 2);
+        assert!(app.history_pick_for_edit);
+        assert_eq!(
+            app.edit_source, "keep-me.png",
+            "the picker hands off without touching the source"
+        );
+    }
+
+    #[test]
+    fn history_enter_completes_pending_pick() {
+        let tmp = TempDir::new().unwrap();
+        seed_png(tmp.path(), "cat.png");
+        std::fs::write(
+            tmp.path().join(".imagai-history.json"),
+            serde_json::to_string(&[serde_json::json!({
+                "id": "1a2b3c4d", "parent": null, "filename": "cat.png",
+                "prompt": "a cat", "model": "dall-e-3", "created": "2026-10-09T11:40:00"
+            })])
+            .expect("serialize store"),
+        )
+        .expect("seed sidecar");
+        let settings = edit_test_settings(tmp.path());
+        let mut app = App::new(&settings);
+        app.open_history_pick();
+        assert!(app.history_pick_for_edit);
+        assert!(
+            !app.handle_history_key(KeyCode::Enter),
+            "Enter does not quit"
+        );
+        assert_eq!(app.edit_source, "cat.png");
+        assert_eq!(app.tab, 1);
+        assert!(!app.history_pick_for_edit, "the flag is cleared");
+    }
+
+    #[test]
+    fn picker_and_history_escape_leave_source_unchanged() {
+        let tmp = TempDir::new().unwrap();
+        seed_png(tmp.path(), "cat.png");
+        let settings = edit_test_settings(tmp.path());
+        let mut app = App::new(&settings);
+        app.edit_source = "keep-me.png".to_string();
+
+        // Esc in the picker.
+        app.open_source_picker();
+        app.picker_move(1);
+        assert!(!app.handle_picker_key(KeyCode::Esc), "Esc does not quit");
+        assert_eq!(app.edit_source, "keep-me.png");
+        assert!(app.edit_picker.is_none());
+
+        // Esc on the History tab with a pick pending.
+        app.open_history_pick();
+        assert!(!app.handle_history_key(KeyCode::Esc), "Esc does not quit");
+        assert_eq!(app.edit_source, "keep-me.png");
+        assert_eq!(app.tab, 1, "back to the Edit tab");
+        assert!(!app.history_pick_for_edit);
+    }
+
     fn write_file(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
         let p = dir.join(name);
         std::fs::write(&p, b"x").unwrap();
@@ -1661,8 +2400,14 @@ mod tests {
         let picker = app.edit_picker.as_ref().expect("picker open");
         assert_eq!(
             picker.entries,
-            vec!["seed_b.png".to_string(), "seed_a.png".to_string()]
+            vec![
+                PICK_FROM_HISTORY.to_string(),
+                "seed_b.png".to_string(),
+                "seed_a.png".to_string()
+            ],
+            "the history row leads, then the images newest-first"
         );
+        assert_eq!(picker.origin, PickerOrigin::Source);
     }
 
     #[test]
@@ -1677,8 +2422,9 @@ mod tests {
         app.open_source_picker();
         app.picker_move(1);
         app.picker_move(1);
+        app.picker_move(1);
         let selected = app.edit_picker.as_ref().expect("picker open").selected;
-        assert_eq!(selected, 1, "selection clamps at the list end");
+        assert_eq!(selected, 2, "selection clamps at the list end");
         let expected = app.edit_picker.as_ref().unwrap().entries[selected].clone();
         app.picker_select();
         assert_eq!(app.edit_source, expected);

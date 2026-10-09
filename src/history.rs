@@ -296,6 +296,53 @@ pub fn record_result(
     Ok(id)
 }
 
+/// The fixed 32-character prompt field: the first 29 characters plus `...`
+/// when longer, otherwise padded with trailing spaces. A lazily adopted file
+/// with no PNG lineage renders `(unknown prompt)` — never a blank column.
+pub fn prompt_field(prompt: &str) -> String {
+    if prompt.is_empty() {
+        return format!("{:<32}", "(unknown prompt)");
+    }
+    if prompt.chars().count() > 32 {
+        let clipped: String = prompt.chars().take(29).collect();
+        format!("{clipped}...")
+    } else {
+        format!("{:<32}", prompt)
+    }
+}
+
+/// `2026-10-09T11:40:00` -> `2026-10-09 11:40`.
+pub fn timestamp_field(created: &str) -> String {
+    match (created.get(..10), created.get(11..16)) {
+        (Some(date), Some(time)) => format!("{date} {time}"),
+        _ => created.to_string(),
+    }
+}
+
+/// One row of the tree in the grammar every surface renders: three spaces of
+/// indent per ancestor level, then the connector (`+- ` for a non-last child,
+/// `` `- `` for the last, none at depth 0), then `✗ ` for a missing file, then
+/// the id8, two spaces, the prompt field, two spaces, the filename, two spaces
+/// and the timestamp. One implementation, three surfaces (BRCH-04).
+pub fn history_row_text(node: &HistoryNode, depth: usize, is_last: bool) -> String {
+    let connector = if depth == 0 {
+        ""
+    } else if is_last {
+        "`- "
+    } else {
+        "+- "
+    };
+    let indent = "   ".repeat(depth);
+    let marker = if node.missing { "✗ " } else { "" };
+    format!(
+        "{indent}{connector}{marker}{}  {}  {}  {}",
+        node.id,
+        prompt_field(&node.prompt),
+        node.filename,
+        timestamp_field(&node.created)
+    )
+}
+
 /// True when `s` is shaped like a node id or an id prefix: at most the 8
 /// characters an id holds, and only lowercase hex. This keeps an ordinary
 /// filename from being mistaken for an id in step (1) of the resolution.

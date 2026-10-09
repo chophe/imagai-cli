@@ -637,51 +637,16 @@ async fn cmd_history(args: &HistoryArgs, settings: &Settings) -> anyhow::Result<
     Ok(())
 }
 
-/// The fixed 32-character prompt column: the first 29 characters plus `...`
-/// when longer, otherwise padded with trailing spaces. A lazily adopted file
-/// with no PNG lineage renders `(unknown prompt)` — never a blank column.
-fn history_prompt_column(prompt: &str) -> String {
-    if prompt.is_empty() {
-        return format!("{:<32}", "(unknown prompt)");
-    }
-    if prompt.chars().count() > 32 {
-        let clipped: String = prompt.chars().take(29).collect();
-        format!("{clipped}...")
-    } else {
-        format!("{:<32}", prompt)
-    }
-}
-
-/// `2026-10-09T11:40:00` -> `2026-10-09 11:40`.
-fn history_timestamp_column(created: &str) -> String {
-    match (created.get(..10), created.get(11..16)) {
-        (Some(date), Some(time)) => format!("{date} {time}"),
-        _ => created.to_string(),
-    }
-}
-
+/// The row grammar itself lives in `history::history_row_text` — one
+/// implementation shared with the TUI and the SPA (BRCH-04), so the CLI's tree
+/// and their rows cannot drift apart.
 fn push_history_row(
     out: &mut Vec<String>,
     node: &history::HistoryNode,
     depth: usize,
     is_last: bool,
 ) {
-    let connector = if depth == 0 {
-        ""
-    } else if is_last {
-        "`- "
-    } else {
-        "+- "
-    };
-    let indent = "   ".repeat(depth);
-    let marker = if node.missing { "✗ " } else { "" };
-    out.push(format!(
-        "{indent}{connector}{marker}{}  {}  {}  {}",
-        node.id,
-        history_prompt_column(&node.prompt),
-        node.filename,
-        history_timestamp_column(&node.created)
-    ));
+    out.push(history::history_row_text(node, depth, is_last));
     let last = node.children.len().saturating_sub(1);
     for (i, child) in node.children.iter().enumerate() {
         push_history_row(out, child, depth + 1, i == last);
