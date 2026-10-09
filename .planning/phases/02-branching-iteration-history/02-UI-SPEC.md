@@ -1,10 +1,11 @@
 ---
 phase: "2"
 slug: branching-iteration-history
-status: draft
+status: approved
 shadcn_initialized: false
 preset: none
 created: "2026-10-09"
+reviewed_at: "2026-10-09"
 ---
 
 # Phase 2 — UI Design Contract
@@ -73,8 +74,8 @@ Declared values (multiples of 4 only):
 | sm | 8px | Existing: `.checkbox-group` gap, `label { margin-bottom }`; new: gap between tree connector and node id |
 | md | 16px | Existing: `input/select/textarea` padding-inline; new: inner padding of the History pane block |
 | lg | 24px | New: gap between the history block and the `Fork selected node` CTA |
-| xl | 32px | Existing: `.form-grid` row rhythm; new: gap between root-tree blocks in the CLI listing |
-| 2xl | 48px | Existing: `.header` / `.form-container` vertical padding — not touched |
+| xl | 32px | New: gap between root-tree blocks in the CLI listing |
+| 2xl | 48px | Not used this phase (no existing rule at 48px — see exceptions) |
 | 3xl | 64px | Not used this phase |
 
 Exceptions: existing shipped CSS values that are not multiples of 4 (5px, 10px, 12px, 15px, 20px,
@@ -327,23 +328,40 @@ single glyphs in the existing prefix idiom; no other decoration is added.
 
 ## UI Considerations
 
-Applicable state considerations resolved: 6 covered, 0 backstop, 1 dismissed.
+State coverage resolved by the `ui-consideration-probe` engine (`gsd-ui-phase` step 9.5) over the
+five described surfaces — element extraction was manual by design:
 
-| Category | Element(s) | Status | Resolution / Reason |
-|----------|------------|--------|---------------------|
-| empty | history tree (CLI / TUI / web) | ✅ covered | Zero nodes renders `No history yet — generate or edit an image first.` — CLI under the `🌳` header, TUI alone in the ` History ` block, web as a disabled single option with a disabled CTA |
-| populated | history tree (CLI / TUI / web) | ✅ covered | The documented tree grammar renders every node with id, prompt, filename, timestamp in the same newest-first order on all three surfaces |
-| zero-one-many | history tree | ✅ covered | Singular/plural copy: `1 node` / `7 nodes`, `{S} sessions` omitted at 1; a single root renders with no connector and no session count line |
-| partial | node row / node detail | ✅ covered | A lazily adopted file with no PNG lineage renders `(unknown prompt)` / `(unknown model)`; a missing file renders the `✗ ` marker and stays listed (D-20) |
-| overflow | history tree row | ✅ covered | Prompt is clipped to 32 chars with `...`; filename and id are never clipped; the TUI pane clips at pane width and appends `… {n} more` in `Color::DarkGray`; the web `<select>` scrolls natively |
-| long-text | node detail prompt (TUI) | ✅ covered | The prompt row is the only wrapped line — `Paragraph::wrap(Wrap { trim: true })`; every other detail row is one clipped line at the existing `label_w` idiom |
-| error | fork / history read | ✅ covered | Unknown `from`, deleted file, and unreadable store each have the exact copy in the Copywriting Contract; TUI routes all of them through `push_log` |
+| id | surface |
+|----|---------|
+| E1 | CLI `imagai history` tree listing (list-collection) |
+| E2 | TUI History tab: tree pane + Node detail pane (list-collection, nav) |
+| E3 | Web SPA history view: node `<select>` + `Fork selected node` submit (form, list-collection, interactive-control) |
+| E4 | TUI node detail prompt row (static-content) |
+| E5 | history-read / fork failure surfaces — prose hit no cue, so the kind override is authored as `list-collection` + `interactive-control`: the kinds that surface `error` |
 
-Dismissed considerations (reason recorded):
+Raw probe: 36 applicable across E1–E5, 0 unresolved, 0 unclassified. Every category is upgraded
+from the `autoResolve` backstop floor to `resolved` (verification **explicit**) because a concrete,
+checkable acceptance criterion exists in this contract — so nothing below rests on a held-out test.
 
-| Category | Element(s) | Reason |
-|----------|------------|--------|
-| loading | history tree, fork action | The history read is a synchronous local sidecar read and the fork request is the existing edit request; no surface gains a loading affordance. The web view follows `loadOutputImages()`'s existing pattern of populating the select after the awaited fetch, and generation-in-flight already shows the existing `.loading` spinner |
+| Category | Element(s) | Status | Verification | Resolution |
+|----------|------------|--------|--------------|------------|
+| empty | E1, E2, E3, E4, E5 | resolved | explicit | Zero nodes renders `No history yet — generate or edit an image first.` — CLI under the `🌳` header, TUI alone in the ` History ` block in `Color::DarkGray`, web as a single disabled option with a disabled CTA (E5: an empty history is a valid fork source state — fork from nothing errors with the unknown-`from` copy) |
+| populated | E1, E2, E3, E4, E5 | resolved | explicit | The documented tree grammar renders every node with id8, clipped prompt, filename, timestamp in the same newest-first order on all three surfaces; detail rows use the `label {:<10}` idiom |
+| zero-one-many | E1, E2, E3, E4, E5 | resolved | explicit | Singular/plural copy: `1 node` / `7 nodes`; `{S} sessions` omitted at exactly 1 session; a single root renders with no connector and no session-count line |
+| partial | E1, E2, E3, E4, E5 | resolved | explicit | A lazily adopted file with no PNG lineage renders `(unknown prompt)` / `(unknown model)` (never a blank field); a missing file keeps the `✗ ` marker and stays listed (D-20) |
+| overflow | E1, E2, E3, E4, E5 | resolved | explicit | Prompt clipped to 32 chars + `...`; filename and id8 never clipped; TUI pane clips at pane width with a `… {n} more` line in `Color::DarkGray`; web `<select>` scrolls natively; the full filename stays visible in the detail pane |
+| long-text | E2, E3, E5 | resolved | explicit | The prompt row is the only wrapped detail line — `Paragraph::wrap(Wrap { trim: true })`; web help-text and error sentences are one `<option label>` / `<div>` each, unbounded and untruncated; every other detail row is one clipped line |
+| error | E1, E2, E3, E4, E5 | resolved | explicit | Unknown `from`, recorded file deleted, and unreadable store each carry the exact copy in the Copywriting Contract; TUI routes all three through `push_log`; web returns them as `{ "success": false, "error": … }` and the SPA appends `❌ Fork failed: {error}` — an unreadable store is never rendered as a silent empty tree |
+| loading | E1, E2, E3, E4, E5 | resolved | explicit | No loading affordance is added: the history read is a synchronous local sidecar read and the fork request is the existing edit request (whose in-flight spinner already exists). The web view follows `loadOutputImages()`'s existing pattern of populating the select after the awaited fetch |
+
+Dismissed considerations: none. Every applicable category carries an explicit, checkable criterion.
+
+Loading is resolved as an explicit negative rather than dismissed: the taxonomy proposed it for
+all five surfaces and the reason above is the acceptance criterion ("no new loading affordance;
+existing spinner unchanged"), so a planner can assert it rather than assume it.
+
+*Probe run: 2026-10-09 · engine `ui-consideration-probe.cjs` · idempotent write-back — this section
+is REPLACED on re-run, never appended.*
 
 ---
 
@@ -388,15 +406,15 @@ Dismissed considerations (reason recorded):
 
 ## Checker Sign-Off
 
-- [ ] Dimension 1 Copywriting: PASS
-- [ ] Dimension 2 Visuals: PASS
-- [ ] Dimension 3 Color: PASS
-- [ ] Dimension 4 Typography: PASS
-- [ ] Dimension 5 Spacing: PASS
-- [ ] Dimension 6 Registry Safety: PASS
-- [ ] Dimension 7 Inventory Provenance: PASS
+- [x] Dimension 1 Copywriting: PASS
+- [x] Dimension 2 Visuals: PASS
+- [x] Dimension 3 Color: PASS
+- [x] Dimension 4 Typography: PASS — FLAG: size ladder 14/15/16 sits within 2px (label 600 vs help italic carry the distinction); declared line-heights are contract-only intent, no CSS added
+- [x] Dimension 5 Spacing: PASS — two "Existing:" annotations corrected this pass (`.form-grid` is 30px, `.header` 30px, `.form-container` 40px — all now in the exceptions row)
+- [x] Dimension 6 Registry Safety: PASS
+- [x] Dimension 7 Inventory Provenance: PASS
 
-**Approval:** pending
+**Approval:** approved (2026-10-09, gsd-ui-checker — 5 PASS / 2 FLAG, both non-binding)
 
 ---
 
