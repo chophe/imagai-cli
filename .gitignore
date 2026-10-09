@@ -4,6 +4,9 @@
 *.env
 .DS_Store
 
+# Generated lineage sidecar — lands inside a configured output_dir (D-08).
+.imagai-history.json
+
 # graft's local graph cache — regenerable, not committed (run `graft build`).
 /graft/
 /.adal/

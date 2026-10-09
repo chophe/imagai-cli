@@ -3,6 +3,7 @@
 mod common;
 
 use std::collections::HashMap;
+use std::path::Path;
 
 use tempfile::TempDir;
 
@@ -82,6 +83,8 @@ async fn openrouter_chat_image_model_saves_png() {
     let files: Vec<_> = std::fs::read_dir(&out_path)
         .unwrap()
         .filter_map(|e| e.ok())
+        // The lineage sidecar also lives in output_dir (D-08).
+        .filter(|e| e.file_name() != ".imagai-history.json")
         .collect();
     assert_eq!(files.len(), 1, "png written to output dir");
 }
@@ -159,6 +162,171 @@ async fn edit_via_openrouter_chat_sends_data_uri_parts() {
 
     // The chat engine must never have touched the multipart endpoint.
     assert_eq!(mock.requests_for("/v1/images/edits").len(), 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn generate_writes_history_sidecar() {
+    let mock = MockServer::start().await;
+    let out = TempDir::new().unwrap();
+    let out_path = out.path().to_path_buf();
+    let mut settings = base_settings(out.path());
+    settings.engines.insert(
+        "mock".to_string(),
+        EngineConfig {
+            api_key: "test".to_string(),
+            base_url: Some(mock.base_url()),
+            model: Some("dall-e-3".to_string()),
+        },
+    );
+
+    let request = ImageGenerationRequest {
+        prompt: "a cat".to_string(),
+        engine: "mock".to_string(),
+        auto_filename: false,
+        random_filename: false,
+        ..Default::default()
+    };
+
+    let results = generate_image_core(&request, &settings).await;
+    assert_eq!(results.len(), 1);
+    assert!(
+        results[0].error.is_none(),
+        "no error: {:?}",
+        results[0].error
+    );
+    let saved = results[0].saved_path.as_ref().expect("saved path");
+
+    // D-08: the sidecar lives inside the configured output_dir.
+    let sidecar = out_path.join(".imagai-history.json");
+    let text = std::fs::read_to_string(&sidecar).expect("sidecar written");
+    let value: serde_json::Value = serde_json::from_str(&text).expect("sidecar parses");
+    let records = value.as_array().expect("sidecar holds an array");
+    assert_eq!(records.len(), 1, "exactly one record");
+
+    // D-23: the filename is the saved file's basename, never a path.
+    let filename = Path::new(saved)
+        .file_name()
+        .expect("file name")
+        .to_string_lossy()
+        .to_string();
+    assert_eq!(records[0]["filename"], filename.as_str());
+    assert_eq!(records[0]["prompt"], "a cat");
+    assert_eq!(records[0]["model"], "dall-e-3");
+
+    // D-17: 8 lowercase hex chars.
+    let id = records[0]["id"].as_str().expect("id is a string");
+    assert_eq!(id.len(), 8, "id is 8 chars: {id}");
+    assert!(
+        id.bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+        "id is lowercase hex: {id}"
+    );
+    assert!(records[0]["parent"].is_null(), "a generation is a root");
+
+    // Proven to be the generation path, not an edit.
+    assert_eq!(mock.requests_for("/v1/images/edits").len(), 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn edit_writes_child_node_under_its_source() {
+    let mock = MockServer::start().await;
+    let out = TempDir::new().unwrap();
+    let out_path = out.path().to_path_buf();
+    let mut settings = base_settings(out.path());
+    settings.engines.insert(
+        "mock".to_string(),
+        EngineConfig {
+            api_key: "test".to_string(),
+            base_url: Some(mock.base_url()),
+            model: Some("gpt-image-1".to_string()),
+        },
+    );
+
+    let request = ImageGenerationRequest {
+        prompt: "a cat".to_string(),
+        engine: "mock".to_string(),
+        auto_filename: false,
+        random_filename: false,
+        ..Default::default()
+    };
+    let results = generate_image_core(&request, &settings).await;
+    let saved = results[0]
+        .saved_path
+        .clone()
+        .expect("generated image saved");
+
+    let edit_request = ImageGenerationRequest {
+        prompt: "make it sunset".to_string(),
+        engine: "mock".to_string(),
+        source_image: Some(saved.to_string()),
+        auto_filename: false,
+        random_filename: false,
+        ..Default::default()
+    };
+    let results = generate_image_core(&edit_request, &settings).await;
+    assert!(
+        results[0].error.is_none(),
+        "edit error: {:?}",
+        results[0].error
+    );
+    let edit_saved = results[0].saved_path.clone().expect("edited image saved");
+
+    let text =
+        std::fs::read_to_string(out_path.join(".imagai-history.json")).expect("sidecar written");
+    let value: serde_json::Value = serde_json::from_str(&text).expect("sidecar parses");
+    let records = value.as_array().expect("sidecar holds an array");
+    assert_eq!(records.len(), 2, "generation plus edit");
+
+    // D-09: the edit is the child of the node matching its source filename.
+    assert_eq!(records[1]["parent"], records[0]["id"]);
+    let edit_name = Path::new(&edit_saved)
+        .file_name()
+        .expect("file name")
+        .to_string_lossy()
+        .to_string();
+    assert!(
+        edit_name.ends_with("-edit.png"),
+        "D-06 naming scheme: {edit_name}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn out_of_dir_result_is_not_recorded() {
+    let mock = MockServer::start().await;
+    let out = TempDir::new().unwrap();
+    let mut settings = base_settings(out.path());
+    settings.engines.insert(
+        "mock".to_string(),
+        EngineConfig {
+            api_key: "test".to_string(),
+            base_url: Some(mock.base_url()),
+            model: Some("dall-e-3".to_string()),
+        },
+    );
+
+    let request = ImageGenerationRequest {
+        prompt: "escape".to_string(),
+        engine: "mock".to_string(),
+        // `generate_image_core` joins this onto output_dir, so the parent
+        // component escapes it (D-22).
+        output_filename: Some("../escaped.png".to_string()),
+        auto_filename: false,
+        random_filename: false,
+        ..Default::default()
+    };
+    let results = generate_image_core(&request, &settings).await;
+    assert!(
+        results[0].error.is_none(),
+        "the image itself still saves: {:?}",
+        results[0].error
+    );
+
+    // D-22: a result outside output_dir never reaches the store.
+    assert!(
+        !out.path().join(".imagai-history.json").exists(),
+        "no sidecar is written for an out-of-dir result"
+    );
+    let _ = std::fs::remove_file(out.path().parent().expect("parent").join("escaped.png"));
 }
 
 #[tokio::test(flavor = "multi_thread")]

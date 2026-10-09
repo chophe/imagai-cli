@@ -119,6 +119,8 @@ async fn generate_endpoint_returns_image_preview() {
     let files: Vec<_> = std::fs::read_dir(&out_path)
         .unwrap()
         .filter_map(|e| e.ok())
+        // The lineage sidecar also lives in output_dir (D-08).
+        .filter(|e| e.file_name() != ".imagai-history.json")
         .collect();
     assert_eq!(files.len(), 1);
 

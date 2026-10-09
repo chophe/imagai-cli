@@ -3,6 +3,7 @@
 pub mod cli;
 pub mod config;
 pub mod core;
+pub mod history;
 pub mod models;
 pub mod provider;
 pub mod tui;
