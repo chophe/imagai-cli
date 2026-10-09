@@ -63,6 +63,16 @@ pub struct HistoryView {
     pub roots: Vec<HistoryNode>,
 }
 
+/// The node id recorded for `filename`, if any. Lets a surface that resolved a
+/// source by name still name the node it belongs to.
+pub fn node_id_for(dir: &Path, filename: &str) -> Option<String> {
+    let records = read_records(dir).ok()?;
+    records
+        .iter()
+        .find(|r| r.filename == filename)
+        .map(|r| r.id.clone())
+}
+
 /// A resolved fork source, in the order `resolve_fork_source` tries (D-12).
 #[derive(Debug)]
 pub enum ForkSource {

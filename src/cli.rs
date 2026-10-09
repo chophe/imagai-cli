@@ -1,11 +1,13 @@
 use std::collections::HashMap;
 use std::io::Read;
+use std::path::Path;
 
 use clap::{Args, Parser, Subcommand};
 use colored::Colorize;
 
 use crate::config::Settings;
 use crate::core::generate_image_core;
+use crate::history;
 use crate::models::ImageGenerationRequest;
 
 #[derive(Parser)]
@@ -25,6 +27,10 @@ pub enum Commands {
     Generate(Box<GenerateArgs>),
     /// Edit an existing image with a change instruction
     Edit(Box<EditArgs>),
+    /// Fork a past image into a new edit, keeping the original lineage
+    Fork(Box<ForkArgs>),
+    /// Show the iteration history of the output directory
+    History(Box<HistoryArgs>),
     /// List configured engines (optionally fetch available models)
     ListEngines {
         /// Query each engine and list ALL returned models (without this, only image-generation models are shown)
@@ -128,6 +134,12 @@ pub struct EditArgs {
     #[arg(long)]
     pub image: Option<String>,
 
+    /// A past image to branch from: an 8-hex node id, a recorded filename, or
+    /// a path — the same resolution `fork --from` performs (D-16). An explicit
+    /// `--image` path always wins (D-03).
+    #[arg(long)]
+    pub from: Option<String>,
+
     /// Additional reference image. Repeat for more than one.
     #[arg(long = "ref")]
     pub refs: Vec<String>,
@@ -149,10 +161,50 @@ pub struct EditArgs {
     pub verbose: bool,
 }
 
+/// `imagai fork —from <image|node-id> -p "<change>"`
+#[derive(Args, Clone)]
+pub struct ForkArgs {
+    /// The past image to branch from: an 8-hex node id, a recorded filename, or
+    /// a path to an existing image (D-12). An untracked file in the output
+    /// directory is adopted as a root node rather than refused.
+    #[arg(long)]
+    pub from: String,
+
+    /// The change to apply to the image (e.g. "make it sunset").
+    #[arg(short, long)]
+    pub prompt: Option<String>,
+
+    /// Additional reference image. Repeat for more than one (cap: 16).
+    #[arg(long = "ref")]
+    pub refs: Vec<String>,
+
+    /// The image engine to use (e.g., openai_gpt).
+    #[arg(long)]
+    pub engine: Option<String>,
+
+    /// Output filename (e.g., my_edit.png). If omitted, derived from the source.
+    #[arg(short, long)]
+    pub output: Option<String>,
+
+    /// Print the request body sent to the API.
+    #[arg(long)]
+    pub verbose: bool,
+}
+
+/// `imagai history`
+#[derive(Args, Clone)]
+pub struct HistoryArgs {
+    /// Emit the tree as JSON instead of ASCII
+    #[arg(long)]
+    pub json: bool,
+}
+
 pub async fn run(cli: Cli, settings: &Settings) -> anyhow::Result<()> {
     match cli.command {
         Commands::Generate(args) => cmd_generate(&args, settings).await,
         Commands::Edit(args) => cmd_edit(&args, settings).await,
+        Commands::Fork(args) => cmd_fork(&args, settings).await,
+        Commands::History(args) => cmd_history(&args, settings).await,
         Commands::ListEngines { all } => cmd_list_engines(all, settings).await,
         Commands::Tui => crate::tui::run(settings).await,
         Commands::Web(args) => crate::web::serve(settings.clone(), &args.host, args.port).await,
@@ -348,23 +400,45 @@ async fn cmd_edit(args: &EditArgs, settings: &Settings) -> anyhow::Result<()> {
         std::process::exit(1);
     }
 
-    // D-03: an explicit `--image` always wins. Without one, the most recent
-    // image in `output_dir` is used and named out loud — a silent pick would
-    // edit a file the user never chose (T-01-07).
+    // D-16: `--from` names a past image exactly the way `fork --from` does, so
+    // stepping back to any branch point is available from either command. An
+    // explicit `--image` path always wins (D-03).
+    let from_image = if args.image.is_none() {
+        match resolve_from(args.from.as_deref(), settings) {
+            Ok(resolved) => resolved,
+            Err(e) => {
+                eprintln!("{} {e}", "[Error]".bold().red());
+                std::process::exit(1);
+            }
+        }
+    } else {
+        None
+    };
+    if let Some(resolved) = &from_image {
+        print_fork_line(settings, resolved);
+    }
+
+    // D-03: an explicit `--image` always wins. Without one, `--from` names a
+    // past image; failing both, the most recent image in `output_dir` is used
+    // and named out loud — a silent pick would edit a file the user never
+    // chose (T-01-07).
     let image = match args.image.clone() {
         Some(explicit) => explicit,
-        None => {
-            let candidates = crate::utils::list_output_images(&settings.output_dir);
-            let Some(picked) = candidates.first() else {
-                anyhow::bail!(
-                    "No images found in output directory {:?}. Pass --image <path> to choose a source explicitly.",
-                    settings.output_dir
-                );
-            };
-            let picked = picked.to_string_lossy().to_string();
-            println!("{} Using most recent image: {picked}", "🖼️".bright_cyan());
-            picked
-        }
+        None => match from_image {
+            Some(from) => from,
+            None => {
+                let candidates = crate::utils::list_output_images(&settings.output_dir);
+                let Some(picked) = candidates.first() else {
+                    anyhow::bail!(
+                        "No images found in output directory {:?}. Pass --image <path> to choose a source explicitly.",
+                        settings.output_dir
+                    );
+                };
+                let picked = picked.to_string_lossy().to_string();
+                println!("{} Using most recent image: {picked}", "🖼️".bright_cyan());
+                picked
+            }
+        },
     };
     match std::fs::metadata(&image) {
         Ok(meta) if meta.is_file() => {}
@@ -417,6 +491,245 @@ async fn cmd_edit(args: &EditArgs, settings: &Settings) -> anyhow::Result<()> {
         std::process::exit(1);
     }
     Ok(())
+}
+
+/// Resolve `--from` to a path to edit. `None` means "no --from given".
+///
+/// The single resolution step shared by `fork` and `edit`: it delegates to
+/// `history::resolve_fork_source`, so the id-prefix / filename / existing-file
+/// order (D-12) and the Copywriting Contract sentences have exactly one home.
+fn resolve_from(from: Option<&str>, settings: &Settings) -> anyhow::Result<Option<String>> {
+    let Some(from) = from else {
+        return Ok(None);
+    };
+    let resolved = history::resolve_fork_source(&settings.output_dir, from)?;
+    let path = match resolved {
+        history::ForkSource::Node { filename, .. } => settings.output_dir.join(filename),
+        history::ForkSource::File { path, .. } => path,
+    };
+    Ok(Some(path.to_string_lossy().to_string()))
+}
+
+/// Print the `🔀 Forking from {filename} (node {id8})` line both branch
+/// commands emit. A source with no recorded node (an out-of-dir file named
+/// explicitly, D-22) omits the node clause rather than inventing one.
+fn print_fork_line(settings: &Settings, source: &str) {
+    let name = Path::new(source)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(source)
+        .to_string();
+    match history::node_id_for(&settings.output_dir, &name) {
+        Some(id) => println!("🔀 Forking from {name} (node {id})"),
+        None => println!("🔀 Forking from {name}"),
+    }
+}
+
+/// `imagai fork —from <image|node-id> -p "<change>"`.
+///
+/// Resolves the branch point, announces it, then runs the existing edit path
+/// unchanged: the same request build, the same `print_edit_results`, the same
+/// exit guard. There is no second pipeline and no second request type (D-13).
+async fn cmd_fork(args: &ForkArgs, settings: &Settings) -> anyhow::Result<()> {
+    let source = match resolve_from(Some(args.from.as_str()), settings) {
+        Ok(Some(path)) => path,
+        Ok(None) => {
+            // `--from` is a required argument, so resolution cannot come back
+            // empty; handled without a panic because it costs nothing.
+            eprintln!(
+                "{} --from names nothing to fork from.",
+                "[Error]".bold().red()
+            );
+            std::process::exit(1);
+        }
+        Err(e) => {
+            // The CLI's usage-error convention: colored tag, verbatim sentence,
+            // exit 1.
+            eprintln!("{} {e}", "[Error]".bold().red());
+            std::process::exit(1);
+        }
+    };
+    print_fork_line(settings, &source);
+
+    let prompt = match &args.prompt {
+        Some(p) => p.clone(),
+        None => read_prompt_from_stdin()?,
+    };
+    if prompt.is_empty() {
+        eprintln!("{} Prompt cannot be empty.", "[Error]".bold().red());
+        std::process::exit(1);
+    }
+
+    let selected_engine = args
+        .engine
+        .clone()
+        .or_else(|| settings.default_engine.clone());
+    let Some(selected_engine) = selected_engine else {
+        eprintln!(
+            "{} No engine specified and no default engine configured. Use --engine or set IMAGAI__DEFAULT_ENGINE.",
+            "[Error]".bold().red()
+        );
+        print_available_engines(settings);
+        std::process::exit(1);
+    };
+
+    if settings.get_engine(&selected_engine).is_none() {
+        eprintln!(
+            "{} Engine '{}' is not configured.",
+            "[Error]".bold().red(),
+            selected_engine
+        );
+        print_available_engines(settings);
+        std::process::exit(1);
+    }
+
+    // Capability gate before any request: an engine that cannot take image
+    // input must fail here rather than spend credits (D-05).
+    let engine_config = settings
+        .get_engine(&selected_engine)
+        .expect("engine presence checked above");
+    crate::provider::edit_transport(&selected_engine, engine_config)?;
+
+    println!(
+        "{} Editing image with engine: {}",
+        "🖼️".bright_cyan(),
+        selected_engine.bold().cyan()
+    );
+    println!("{} {}", "📜 Change:".bold(), prompt);
+
+    let request = ImageGenerationRequest {
+        prompt,
+        engine: selected_engine.clone(),
+        output_filename: args.output.clone(),
+        n: 1,
+        verbose: args.verbose,
+        source_image: Some(source),
+        ref_images: args.refs.clone(),
+        ..Default::default()
+    };
+
+    println!("{} Processing...", "[spinner]".bold());
+    let results = generate_image_core(&request, settings).await;
+
+    print_edit_results(&results);
+
+    // The edit-path non-zero exit guard: a failed fork must not read as success.
+    if results.iter().any(|r| r.error.is_some()) {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+/// `imagai history` — print the iteration-history tree.
+///
+/// An unreadable store propagates with `?` so the `Could not read history at`
+/// sentence reaches the operator verbatim; `cli::run`'s `anyhow::Result` is
+/// what `main` prints and exits 1 on.
+async fn cmd_history(args: &HistoryArgs, settings: &Settings) -> anyhow::Result<()> {
+    let view = history::load_view(&settings.output_dir)?;
+    if args.json {
+        // One serializer, two callers: this is the same `HistoryView` the web
+        // API returns, so the shapes cannot drift (D-19, BRCH-04).
+        println!("{}", serde_json::to_string_pretty(&view)?);
+    } else {
+        println!("{}", render_history_text(&view));
+    }
+    Ok(())
+}
+
+/// The fixed 32-character prompt column: the first 29 characters plus `...`
+/// when longer, otherwise padded with trailing spaces. A lazily adopted file
+/// with no PNG lineage renders `(unknown prompt)` — never a blank column.
+fn history_prompt_column(prompt: &str) -> String {
+    if prompt.is_empty() {
+        return format!("{:<32}", "(unknown prompt)");
+    }
+    if prompt.chars().count() > 32 {
+        let clipped: String = prompt.chars().take(29).collect();
+        format!("{clipped}...")
+    } else {
+        format!("{:<32}", prompt)
+    }
+}
+
+/// `2026-10-09T11:40:00` -> `2026-10-09 11:40`.
+fn history_timestamp_column(created: &str) -> String {
+    match (created.get(..10), created.get(11..16)) {
+        (Some(date), Some(time)) => format!("{date} {time}"),
+        _ => created.to_string(),
+    }
+}
+
+fn push_history_row(
+    out: &mut Vec<String>,
+    node: &history::HistoryNode,
+    depth: usize,
+    is_last: bool,
+) {
+    let connector = if depth == 0 {
+        ""
+    } else if is_last {
+        "`- "
+    } else {
+        "+- "
+    };
+    let indent = "   ".repeat(depth);
+    let marker = if node.missing { "✗ " } else { "" };
+    out.push(format!(
+        "{indent}{connector}{marker}{}  {}  {}  {}",
+        node.id,
+        history_prompt_column(&node.prompt),
+        node.filename,
+        history_timestamp_column(&node.created)
+    ));
+    let last = node.children.len().saturating_sub(1);
+    for (i, child) in node.children.iter().enumerate() {
+        push_history_row(out, child, depth + 1, i == last);
+    }
+}
+
+/// Render the tree as indented ASCII (D-17). Pure function of the `HistoryView`,
+/// so the shape the tests pin is the shape the user sees.
+fn render_history_text(view: &history::HistoryView) -> String {
+    if view.roots.is_empty() {
+        return "🌳 No history yet — generate or edit an image first.".to_string();
+    }
+    let sessions = view.roots.len();
+    // The session clause is dropped entirely when there is exactly one.
+    let session_clause = if sessions == 1 {
+        String::new()
+    } else {
+        format!(
+            ", {} session{}",
+            sessions,
+            if sessions == 1 { "" } else { "s" }
+        )
+    };
+    let mut lines: Vec<String> = vec![format!(
+        "🌳 Iteration history — {} ({} node{}{})",
+        view.output_dir,
+        view.nodes,
+        if view.nodes == 1 { "" } else { "s" },
+        session_clause
+    )];
+    for root in &view.roots {
+        // One blank line after the header and one between root sessions.
+        lines.push(String::new());
+        push_history_row(&mut lines, root, 0, true);
+    }
+    if view.missing > 0 {
+        lines.push(String::new());
+        let sentence = if view.missing == 1 {
+            "1 node points at a file that is no longer in the output directory.".to_string()
+        } else {
+            format!(
+                "{} nodes point at files that are no longer in the output directory.",
+                view.missing
+            )
+        };
+        lines.push(format!("{} {}", "[warning]".bold().yellow(), sentence));
+    }
+    lines.join("\n")
 }
 
 async fn cmd_list_engines(all: bool, settings: &Settings) -> anyhow::Result<()> {

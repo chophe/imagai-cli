@@ -651,6 +651,400 @@ async fn edit_rejects_more_than_sixteen_images() {
     );
 }
 
+// ---------------------------------------------------------------- history
+
+/// Seed a `.imagai-history.json` sidecar directly, so the tree shape is
+/// deterministic: fixed ids, filenames, prompts and timestamps. No PNGs are
+/// written, so every node reads as `missing` (D-20) — the case these tests
+/// assert.
+fn seed_history_store(dir: &Path, records: &[serde_json::Value]) {
+    let json = serde_json::to_string(records).expect("serialize store");
+    std::fs::write(dir.join(".imagai-history.json"), json).expect("seed store");
+}
+
+/// One tree row, built with the documented grammar: three spaces of indent per
+/// ancestor level, then the connector, then `✗ ` for a missing file, then the
+/// id8, two spaces, the fixed 32-character prompt field, two spaces, the
+/// filename, two spaces and `YYYY-MM-DD HH:MM`.
+fn history_row(
+    id: &str,
+    prompt: &str,
+    filename: &str,
+    time: &str,
+    depth: usize,
+    connector: Option<&str>,
+    missing: bool,
+) -> String {
+    let field = if prompt.chars().count() > 32 {
+        format!("{}...", prompt.chars().take(29).collect::<String>())
+    } else {
+        format!("{:<32}", prompt)
+    };
+    let indent = "   ".repeat(depth);
+    let connector = connector.unwrap_or("");
+    let marker = if missing { "✗ " } else { "" };
+    format!("{indent}{connector}{marker}{id}  {field}  {filename}  {time}")
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn history_tree_prints_connectors() {
+    let mock = MockServer::start().await;
+    let out = TempDir::new().unwrap();
+    let out_path = out.path().to_path_buf();
+    seed_history_store(
+        out.path(),
+        &[
+            serde_json::json!({
+                "id": "1a2b3c4d", "parent": null, "filename": "cat.png",
+                "prompt": "a cat wearing a hat", "model": "dall-e-3",
+                "created": "2026-10-09T11:40:00"
+            }),
+            serde_json::json!({
+                "id": "2b3c4d5e", "parent": "1a2b3c4d", "filename": "cat-edit.png",
+                "prompt": "make it sunset over the mountains with a warm glow",
+                "model": "gpt-image-1", "created": "2026-10-09T11:41:00"
+            }),
+            serde_json::json!({
+                "id": "3c4d5e6f", "parent": "1a2b3c4d", "filename": "cat-edit-1.png",
+                "prompt": "add a party hat", "model": "gpt-image-1",
+                "created": "2026-10-09T11:42:00"
+            }),
+        ],
+    );
+
+    cmd(&mock, out.path())
+        .arg("history")
+        .assert()
+        .success()
+        // One session: the session clause is omitted entirely.
+        .stdout(predicate::str::contains(format!(
+            "🌳 Iteration history — {} (3 nodes)",
+            out_path.to_string_lossy()
+        )))
+        .stdout(predicate::str::contains(history_row(
+            "1a2b3c4d",
+            "a cat wearing a hat",
+            "cat.png",
+            "2026-10-09 11:40",
+            0,
+            None,
+            true,
+        )))
+        // Non-last child: three spaces of indent plus the `+- ` connector.
+        .stdout(predicate::str::contains(history_row(
+            "2b3c4d5e",
+            "make it sunset over the mountains with a warm glow",
+            "cat-edit.png",
+            "2026-10-09 11:41",
+            1,
+            Some("+- "),
+            true,
+        )))
+        // Last child: six spaces of indent (two ancestor levels) plus `` `- ``.
+        .stdout(predicate::str::contains(history_row(
+            "3c4d5e6f",
+            "add a party hat",
+            "cat-edit-1.png",
+            "2026-10-09 11:42",
+            1,
+            Some("`- "),
+            true,
+        )));
+
+    // Three nodes are missing, so the plural warning line prints.
+    let _ = out_path;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn history_tree_marks_missing_nodes() {
+    let mock = MockServer::start().await;
+    let out = TempDir::new().unwrap();
+    seed_history_store(
+        out.path(),
+        &[serde_json::json!({
+            "id": "1a2b3c4d", "parent": null, "filename": "gone.png",
+            "prompt": "rainy street at night", "model": "dall-e-3",
+            "created": "2026-10-09T11:30:00"
+        })],
+    );
+
+    cmd(&mock, out.path())
+        .arg("history")
+        .assert()
+        .success()
+        // `✗ ` sits immediately after the (absent) connector, before the id8.
+        .stdout(predicate::str::contains(history_row(
+            "1a2b3c4d",
+            "rainy street at night",
+            "gone.png",
+            "2026-10-09 11:30",
+            0,
+            None,
+            true,
+        )))
+        .stdout(predicate::str::contains(
+            "[warning] 1 node points at a file that is no longer in the output directory.",
+        ));
+
+    // Plural wording: two missing nodes.
+    seed_history_store(
+        out.path(),
+        &[
+            serde_json::json!({
+                "id": "1a2b3c4d", "parent": null, "filename": "gone.png",
+                "prompt": "one", "model": "dall-e-3", "created": "2026-10-09T11:30:00"
+            }),
+            serde_json::json!({
+                "id": "2b3c4d5e", "parent": null, "filename": "also-gone.png",
+                "prompt": "two", "model": "dall-e-3", "created": "2026-10-09T11:31:00"
+            }),
+        ],
+    );
+    cmd(&mock, out.path())
+        .arg("history")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "[warning] 2 nodes point at files that are no longer in the output directory.",
+        ));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn history_empty_state() {
+    let mock = MockServer::start().await;
+    let out = TempDir::new().unwrap();
+
+    cmd(&mock, out.path())
+        .arg("history")
+        .assert()
+        .success()
+        .stdout(predicate::eq(
+            "🌳 No history yet — generate or edit an image first.\n",
+        ))
+        .stdout(predicate::str::contains("Iteration history —").not())
+        .stdout(predicate::str::contains("[warning]").not());
+}
+
+// ---------------------------------------------------------------- fork
+
+/// Seed a root node and the matching PNG, returning the root's id.
+fn seed_root_with_file(dir: &Path, filename: &str) -> String {
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(common::PIXEL_PNG_B64)
+        .expect("decode PIXEL_PNG_B64");
+    std::fs::write(dir.join(filename), bytes).expect("seed png");
+    let id = "1a2b3c4d".to_string();
+    seed_history_store(
+        dir,
+        &[serde_json::json!({
+            "id": id, "parent": null, "filename": filename,
+            "prompt": "a cat", "model": "dall-e-3", "created": "2026-10-09T11:40:00"
+        })],
+    );
+    id
+}
+
+fn read_history_record_ids(dir: &Path) -> Vec<String> {
+    let text = std::fs::read_to_string(dir.join(".imagai-history.json")).expect("sidecar");
+    let value: serde_json::Value = serde_json::from_str(&text).expect("sidecar parses");
+    value
+        .as_array()
+        .expect("array")
+        .iter()
+        .map(|r| r["id"].as_str().expect("id").to_string())
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn fork_from_node_id_records_child() {
+    let mock = MockServer::start().await;
+    let out = TempDir::new().unwrap();
+    let root_id = seed_root_with_file(out.path(), "cat.png");
+
+    cmd_edit(&mock, out.path())
+        .args(["fork", "--from", &root_id, "-p", "make it sunset"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("🔀 Forking from"))
+        .stdout(predicate::str::contains("cat.png"));
+
+    // One edits request, zero generations: the shared core took the edit path.
+    assert_eq!(mock.requests_for("/v1/images/edits").len(), 1);
+    assert_eq!(mock.requests_for("/v1/images/generations").len(), 0);
+
+    let text = std::fs::read_to_string(out.path().join(".imagai-history.json")).expect("sidecar");
+    let value: serde_json::Value = serde_json::from_str(&text).expect("parses");
+    let records = value.as_array().expect("array");
+    assert_eq!(records.len(), 2, "root plus fork child");
+    assert_eq!(records[1]["parent"], records[0]["id"], "child of the root");
+    assert!(
+        records[1]["filename"]
+            .as_str()
+            .expect("filename")
+            .ends_with("-edit.png"),
+        "D-06 naming scheme"
+    );
+    // The original record is untouched.
+    assert_eq!(records[0]["id"], root_id.as_str());
+    assert!(out.path().join("cat-edit.png").is_file());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn fork_from_filename_of_adopted_file() {
+    let mock = MockServer::start().await;
+    let out = TempDir::new().unwrap();
+    // No history store at all: the file is adopted at fork time (D-12).
+    let source = seed_source_png(out.path(), "loose.png");
+    let before = std::fs::read(&source).expect("source bytes before");
+
+    cmd_edit(&mock, out.path())
+        .args(["fork", "--from", "loose.png", "-p", "make it sunset"])
+        .assert()
+        .success();
+
+    let text = std::fs::read_to_string(out.path().join(".imagai-history.json")).expect("sidecar");
+    let value: serde_json::Value = serde_json::from_str(&text).expect("parses");
+    let records = value.as_array().expect("array");
+    assert_eq!(records.len(), 2, "adopted root plus the child");
+    assert_eq!(records[0]["filename"], "loose.png");
+    assert!(records[0]["parent"].is_null(), "adopted as a root");
+    assert_eq!(records[1]["parent"], records[0]["id"]);
+
+    // The fork references the same file rather than copying it (D-13).
+    assert_eq!(
+        std::fs::read(&source).expect("source bytes after"),
+        before,
+        "the source file is untouched"
+    );
+    let child = out.path().join("loose-edit.png");
+    assert!(child.is_file(), "the fork's own result");
+    assert_ne!(child, source);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn fork_keeps_both_branches_visible() {
+    let mock = MockServer::start().await;
+    let out = TempDir::new().unwrap();
+    seed_history_store(
+        out.path(),
+        &[
+            serde_json::json!({
+                "id": "1a2b3c4d", "parent": null, "filename": "cat.png",
+                "prompt": "a cat", "model": "dall-e-3", "created": "2026-10-09T11:40:00"
+            }),
+            serde_json::json!({
+                "id": "2b3c4d5e", "parent": "1a2b3c4d", "filename": "cat-edit.png",
+                "prompt": "make it sunset", "model": "gpt-image-1",
+                "created": "2026-10-09T11:41:00"
+            }),
+        ],
+    );
+    seed_source_png(out.path(), "cat.png");
+
+    cmd_edit(&mock, out.path())
+        .args(["fork", "--from", "1a2b3c4d", "-p", "make it night"])
+        .assert()
+        .success();
+
+    // BRCH-02: the original branch and the new child are both listed, and the
+    // original parent node still appears exactly once.
+    let assert = cmd(&mock, out.path()).arg("history").assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
+    assert!(
+        stdout.contains("cat-edit.png"),
+        "the original child is still listed: {stdout}"
+    );
+    assert!(
+        stdout.contains("night") || stdout.contains("cat-edit-1.png"),
+        "the fork's child is listed: {stdout}"
+    );
+    assert_eq!(
+        stdout.matches("1a2b3c4d").count(),
+        1,
+        "the root appears exactly once: {stdout}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn fork_rejects_unknown_source() {
+    let mock = MockServer::start().await;
+    let out = TempDir::new().unwrap();
+
+    cmd_edit(&mock, out.path())
+        .args(["fork", "--from", "nope.png", "-p", "x"])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "No history node or image named 'nope.png' in",
+        ))
+        .stderr(predicate::str::contains(
+            "run 'imagai history' to see what is available.",
+        ));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn fork_rejects_deleted_file_of_recorded_node() {
+    let mock = MockServer::start().await;
+    let out = TempDir::new().unwrap();
+    // A recorded node whose file was deleted externally (D-20 keeps the node,
+    // but a fork cannot start from it).
+    seed_history_store(
+        out.path(),
+        &[serde_json::json!({
+            "id": "1a2b3c4d", "parent": null, "filename": "gone.png",
+            "prompt": "a cat", "model": "dall-e-3", "created": "2026-10-09T11:40:00"
+        })],
+    );
+
+    cmd_edit(&mock, out.path())
+        .args(["fork", "--from", "1a2b3c4d", "-p", "x"])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("which is no longer in"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn fork_rejects_more_than_sixteen_images() {
+    let mock = MockServer::start().await;
+    let out = TempDir::new().unwrap();
+    seed_source_png(out.path(), "cat.png");
+
+    let mut c = cmd_edit(&mock, out.path());
+    c.arg("fork")
+        .arg("--from")
+        .arg("cat.png")
+        .arg("-p")
+        .arg("too many");
+    for _ in 0..16 {
+        c.arg("--ref").arg(out.path().join("cat.png"));
+    }
+    c.assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("17"))
+        .stderr(predicate::str::contains("16"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn edit_from_resolves_a_past_node_without_an_image_flag() {
+    let mock = MockServer::start().await;
+    let out = TempDir::new().unwrap();
+    seed_root_with_file(out.path(), "cat.png");
+
+    cmd_edit(&mock, out.path())
+        .args(["edit", "--from", "1a2b3c4d", "-p", "make it sunset"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("🔀 Forking from cat.png"));
+
+    assert_eq!(mock.requests_for("/v1/images/edits").len(), 1);
+    assert!(out.path().join("cat-edit.png").is_file());
+    assert_eq!(read_history_record_ids(out.path()).len(), 2);
+}
+
 // ---------------------------------------------------------------- errors
 
 #[tokio::test(flavor = "multi_thread")]
