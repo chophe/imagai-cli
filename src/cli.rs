@@ -664,11 +664,7 @@ fn render_history_text(view: &history::HistoryView) -> String {
     let session_clause = if sessions == 1 {
         String::new()
     } else {
-        format!(
-            ", {} session{}",
-            sessions,
-            if sessions == 1 { "" } else { "s" }
-        )
+        format!(", {sessions} sessions")
     };
     let mut lines: Vec<String> = vec![format!(
         "🌳 Iteration history — {} ({} node{}{})",
