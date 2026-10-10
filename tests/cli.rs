@@ -752,7 +752,14 @@ async fn history_tree_prints_connectors() {
         )));
 
     // Three nodes are missing, so the plural warning line prints.
-    let _ = out_path;
+    let assert = cmd(&mock, out.path()).arg("history").assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
+    assert!(
+        stdout.contains(
+            "[warning] 3 nodes point at files that are no longer in the output directory."
+        ),
+        "the plural warning line: {stdout}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
