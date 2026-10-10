@@ -93,10 +93,19 @@ pub fn history_path(dir: &Path) -> PathBuf {
 /// exists but cannot be read or parsed is an error naming the path and the
 /// reason — never a silent empty tree (the Copywriting Contract's
 /// unreadable-store sentence).
+///
+/// Only `NotFound` means "no history yet". A non-UTF-8 sidecar — a hand edit, a
+/// truncated write from another tool — fails `read_to_string` with
+/// `InvalidData`, and reading it as empty would let the next read-modify-write
+/// truncate and destroy the operator's history (CR-02).
 pub fn read_records(dir: &Path) -> anyhow::Result<Vec<HistoryRecord>> {
     let path = history_path(dir);
-    let Ok(text) = std::fs::read_to_string(&path) else {
-        return Ok(Vec::new());
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => {
+            anyhow::bail!("Could not read history at {}: {e}", path.display());
+        }
     };
     let records: Vec<HistoryRecord> = serde_json::from_str(&text)
         .map_err(|e| anyhow::anyhow!("Could not read history at {}: {e}", path.display()))?;
@@ -515,6 +524,41 @@ mod tests {
         );
         assert!(text.contains(HISTORY_FILENAME), "names the path: {text}");
         assert!(load_view(dir.path()).is_err(), "never a silent empty tree");
+    }
+
+    #[test]
+    fn unreadable_sidecar_is_an_error_not_an_empty_store() {
+        // CR-02: a non-UTF-8 sidecar used to read as `Ok(vec![])`, because every
+        // `read_to_string` failure was mapped to an empty store. `read_to_string`
+        // fails with `InvalidData`, not `NotFound`, so only the missing file is
+        // the "no history yet" case.
+        let dir = TempDir::new().unwrap();
+        std::fs::write(history_path(dir.path()), b"\xff\xfe\x00{\"")
+            .expect("write non-utf8 sidecar");
+        let err = read_records(dir.path()).expect_err("unreadable is an error");
+        let text = err.to_string();
+        assert!(
+            text.contains("Could not read history at"),
+            "contract sentence: {text}"
+        );
+        assert!(text.contains(HISTORY_FILENAME), "names the path: {text}");
+        assert!(load_view(dir.path()).is_err(), "never a silent empty tree");
+    }
+
+    #[test]
+    fn an_unreadable_sidecar_is_not_overwritten_by_the_next_record() {
+        // CR-02: the hazard the empty read created — the next read-modify-write
+        // truncated the file and destroyed the operator's history.
+        let dir = TempDir::new().unwrap();
+        let broken = b"\xff\xfe\x00{\"";
+        std::fs::write(history_path(dir.path()), broken).expect("write non-utf8 sidecar");
+        let outcome = record_result(dir.path(), &dir.path().join("new.png"), "x", "m", None);
+        assert!(
+            outcome.is_err(),
+            "recording must refuse rather than clobber an unreadable store"
+        );
+        let after = std::fs::read(history_path(dir.path())).expect("sidecar still there");
+        assert_eq!(after, broken, "the operator's bytes are untouched");
     }
 
     #[test]

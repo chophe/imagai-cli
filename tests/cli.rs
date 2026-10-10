@@ -825,6 +825,26 @@ async fn history_empty_state() {
         .stdout(predicate::str::contains("[warning]").not());
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn history_reports_a_non_utf8_sidecar_instead_of_an_empty_tree() {
+    // CR-02: `read_records` mapped every `read_to_string` failure to an empty
+    // store, so a non-UTF-8 sidecar read as "no history" and the next write
+    // destroyed it. `Could not read history at` must reach the operator.
+    let mock = MockServer::start().await;
+    let out = TempDir::new().unwrap();
+    std::fs::write(out.path().join(".imagai-history.json"), b"\xff\xfe\x00{\"")
+        .expect("write non-utf8 sidecar");
+
+    cmd(&mock, out.path())
+        .arg("history")
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("Could not read history at"))
+        .stderr(predicate::str::contains(".imagai-history.json"))
+        .stdout(predicate::str::contains("No history yet").not());
+}
+
 // ---------------------------------------------------------------- fork
 
 /// Seed a root node and the matching PNG, returning the root's id.
