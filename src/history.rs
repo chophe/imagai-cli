@@ -361,7 +361,7 @@ pub fn record_result(
         id: id.clone(),
         parent,
         filename,
-        prompt: prompt.to_string(),
+        prompt: sanitize_prompt(prompt),
         model: model.to_string(),
         created: crate::utils::datetime_iso(SystemTime::now()),
     };
@@ -382,6 +382,27 @@ pub fn prompt_field(prompt: &str) -> String {
     } else {
         format!("{:<32}", prompt)
     }
+}
+
+/// Strip ASCII control characters from a prompt before it reaches the store.
+///
+/// The row grammar is fixed-width and one-row-per-node, so a newline in the
+/// prompt emitted a phantom second row and misaligned the whole listing, and an
+/// escape sequence was executed by whatever terminal ran `imagai history`
+/// (WR-02). Prompts arrive from `--prompt`, the web payloads and the TUI
+/// textarea; this is the one place they all funnel through, so none of them can
+/// break the grammar. The stdin path already stripped them.
+fn sanitize_prompt(prompt: &str) -> String {
+    prompt
+        .chars()
+        .map(|c| {
+            if (c as u32) < 0x20 || c as u32 == 0x7F {
+                ' '
+            } else {
+                c
+            }
+        })
+        .collect()
 }
 
 /// `2026-10-09T11:40:00` -> `2026-10-09 11:40`.
@@ -1106,6 +1127,43 @@ mod tests {
             roots,
             vec!["ccc33333", "aaa11112", "root0001"],
             "same-second roots are newest-append-first, not by uuid"
+        );
+    }
+
+    #[test]
+    fn record_result_strips_control_characters_from_the_prompt() {
+        // WR-02: the prompt was embedded raw into the row grammar. A newline
+        // emitted a phantom second row and misaligned the tree; an escape
+        // sequence executed in whatever terminal ran `imagai history`. Every
+        // surface's prompt funnels through `record_result`, so the store never
+        // holds them.
+        let dir = TempDir::new().unwrap();
+        let nasty = "line one\nline two\u{1b}[2J\u{1b}[Hpwned";
+        record_result(
+            dir.path(),
+            &dir.path().join("a.png"),
+            nasty,
+            "dall-e-3",
+            None,
+        )
+        .expect("recorded");
+
+        let records = read_records(dir.path()).expect("sidecar");
+        assert!(
+            !records[0]
+                .prompt
+                .chars()
+                .any(|c| (c as u32) < 0x20 || c as u32 == 0x7F),
+            "no control character reaches the store: {:?}",
+            records[0].prompt
+        );
+
+        let view = load_view(dir.path()).expect("view");
+        let row = history_row_text(&view.roots[0], 0, true);
+        assert_eq!(row.lines().count(), 1, "one row per node: {row:?}");
+        assert!(
+            !row.contains('\u{1b}'),
+            "no escape reaches the terminal: {row:?}"
         );
     }
 
