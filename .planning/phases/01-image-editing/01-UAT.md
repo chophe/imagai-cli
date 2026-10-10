@@ -172,3 +172,29 @@ skipped: 0
 - 01-00 D1 (human approve decision for mime_guess 2.0.5 + unicase 2.10.0) was recorded in 01-00-SUMMARY.md at the wave-0 gate; pre-condition, not re-tested here.
 - UI checkpoints: 0 auto-verified (no browser MCP in this session), 2 queued for manual review (tests 23–24).
 - Cold-start injection skipped: no server/bootstrap file patterns among changed paths (Rust CLI, no startup scripts).
+
+## Re-verification (2026-10-10, stale-report refresh)
+
+Phase 2's security fixes (commit 56984f8 and follow-ups) changed five covered files after
+the 2026-10-09 verification (`src/cli.rs`, `tests/cli.rs`, `src/core.rs`, `src/web.rs`,
+`tests/web.rs`), so all 24 checks were re-run against the current tree.
+
+- Checks 1–22 (automated): **pass** — full suite green in a single run (`cargo test`: lib 80 /
+  cli 43 / core 8 / web 35, 0 failed; 166 total), `cargo fmt --check` clean,
+  `cargo clippy --all-targets` zero warnings, plus live binary runs against an in-process mock
+  provider covering explicit-path edit, auto-pick, multi-ref wire order, the 16-image cap on
+  CLI and web, the capability gate, the `-edit` filename scheme, PNG lineage chunks, the
+  `--from` plain-filename guard (a separator-bearing record is refused with nothing sent),
+  and exit-1-on-failure.
+- Check 23 (browser edit flow): **pass** — re-verified live in a real browser against the
+  running `imagai web`: pickers populated from the server, instruction submitted through the
+  form, saved path shown, edited image rendered in the page.
+- Check 24 (TUI walkthrough): **pass (scoped)** — pty-driven session verified the Edit tab is
+  reachable via Tab, the source picker opens and lists output-dir images newest-first, arrows
+  move the picker selection, and Enter commits the pick into the source field. The
+  type→submit→saved-path tail is covered by the 18 passing `tui::tests` and the user's
+  2026-10-07 walkthrough.
+
+Result: 24/24 pass (22 automated + 2 walkthroughs). No regression from the shared-file changes.
+01-VERIFICATION.md regenerated through the fingerprint command the same session
+(digest `v3:sha256:72f289a1b221a622c2a89cbaa23978e8cd887f29dd354f38dfe2740496396673`, status `passed`).
