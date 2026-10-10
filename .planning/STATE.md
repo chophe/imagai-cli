@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 2
 current_phase_name: Branching & Iteration History
 status: phase-complete
-stopped_at: Phase 02 complete (4/4 plans), ready to plan Phase 3
-last_updated: "2026-10-10T04:26:59.319Z"
+stopped_at: Completed 02-05-PLAN.md (G-1 fork filename collision gap closure)
+last_updated: "2026-10-10T07:15:56.832Z"
 last_activity: 2026-10-10
 last_activity_desc: Phase 02 complete, transitioned to Phase 3
-state_head: 7f0d8204c5f2e675dc3ce1b2b4950e516fe3d327
+state_head: f5cf9c24f99f809859a924e250d2d9b86d486e49
 progress:
   total_phases: 4
   completed_phases: 2
-  total_plans: 9
-  completed_plans: 9
+  total_plans: 10
+  completed_plans: 10
   percent: 50
 ---
 
@@ -55,6 +55,11 @@ Progress: [█████░░░░░] 50%
 - Trend: N/A
 
 *Updated after each plan completion*
+**Per-Plan Metrics:**
+
+| Plan | Duration | Tasks | Files |
+|------|----------|-------|-------|
+| Phase 2 P05 | 15min | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -74,6 +79,8 @@ Recent decisions affecting current work:
 - [Phase 1]: D-05 capability gate — `edit_transport` decides wire shape before any socket opens, bails naming engine+model
 - [Phase 1]: D-07 PNG lineage — Prompt/Model/Source tEXt chunks, Source holds filename only
 - [Phase 1]: web stays localhost-only by convention; symlink-in-output-dir and TLS-trust accepts logged in 01-SECURITY.md
+- [Phase 2]: G-1: a filename claim has two halves (file on disk + sidecar record); history::filename_taken probes both and reads an unreadable sidecar as taken
+- [Phase 2]: G-1: the n==1 source_image arm bumps through the shared suffix_numbered _N scheme, bounded by MAX_NAME_BUMPS, keeping the canonical name when free
 
 ### Pending Todos
 
@@ -83,7 +90,7 @@ None yet.
 
 - `created`/`modified` gallery timestamps both derive from mtime — recorded bug, owned by a future phase (Phase 2 shipped real node timestamps in `.imagai-history.json`; the gallery display is untouched)
 - History has no prune/delete/gc surface (D-21 defers it) and a hand-edited sidecar's `../` filename is reduced to its final component before any join (T-02-01)
-- Phase 2 G-1: a second fork from the same source overwrites the first forked image (src/core.rs:85 plus the else-base arm at src/core.rs:88-89; n is always 1 so line 87 suffix_numbered never runs). Two forks from one node id wrote one file while the sidecar held two records naming it, and history marked neither missing. Fix route: code-review-fix dispatch.
+- ~~Phase 2 G-1: a second fork from the same source overwrites the first forked image (src/core.rs:85 plus the else-base arm at src/core.rs:88-89; n is always 1 so line 87 suffix_numbered never runs). Two forks from one node id wrote one file while the sidecar held two records naming it, and history marked neither missing. Fix route: code-review-fix dispatch.~~ **CLOSED by 02-05** (`5264a55`, `f5cf9c2`): `history::filename_taken` now probes both halves of a filename claim and the `n == 1` source_image arm bumps through `suffix_numbered`; `tests/cli.rs#two_forks_from_one_source_keep_both_images` proves both forks survive with distinct names.
 
 ## Deferred Items
 
@@ -93,6 +100,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-10-10
-Stopped at: Phase 02 complete (4/4 plans), ready to plan Phase 3
+Last session: 2026-10-10T07:15:55.938Z
+Stopped at: Completed 02-05-PLAN.md (G-1 fork filename collision gap closure)
 Resume file: None

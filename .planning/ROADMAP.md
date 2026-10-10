@@ -60,7 +60,7 @@ Brownfield extension of the existing modular monolith (shared core `src/core.rs`
   3. User can step back to a prior branch point and continue iterating from it
   4. Editing and branching behave identically on CLI, TUI, and web (same history, same operations)
 
-**Plans**: 5 plans
+**Plans**: 5/5 plans executed
 **Wave 1**
 
 - [x] 02-01-PLAN.md — The persistence layer: `.imagai-history.json` sidecar store in `src/history.rs` plus the recording hook on `generate_image_core`, so every saved image gets a lineage node (D-08, D-09, D-11, D-20, D-22, D-23)
@@ -73,7 +73,7 @@ Brownfield extension of the existing modular monolith (shared core `src/core.rs`
 
 **Wave 3** *(gap closure: the verification report's one blocker)*
 
-- [ ] 02-05-PLAN.md — G-1: the `source_image` filename arm is collision-safe, so a second fork from the same source no longer overwrites the first fork's image (D-14, D-15; BRCH-02, BRCH-03)
+- [x] 02-05-PLAN.md — G-1: the `source_image` filename arm is collision-safe, so a second fork from the same source no longer overwrites the first fork's image (D-14, D-15; BRCH-02, BRCH-03)
 
 **Wave structure:** 02-01 (w1) → 02-02 ∥ 02-03 ∥ 02-04 (w2) → 02-05 (w3, gap closure)
 `02-01` creates `src/history.rs` and its public API (`load_view`, `record_result`, `resolve_fork_source`, `HistoryView`), which all three Wave-2 plans consume; each of them touches a disjoint file set (`src/cli.rs`+`tests/cli.rs`, `src/tui.rs`, `src/web.rs`+`web_interface.html`+`tests/web.rs`), so they carry no implicit file-ownership dependency and run in parallel. `02-02`'s `render_history_text` is the reference implementation of the tree grammar that `02-03`'s `history_rows` and `02-04`'s SPA option labels must match.
@@ -131,6 +131,6 @@ Brownfield extension of the existing modular monolith (shared core `src/core.rs`
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Image Editing | 5/5 | Complete    | 2026-10-09 |
-| 2. Branching & Iteration History | 0/4 (est.) | Planning complete | - |
+| 2. Branching & Iteration History | 5/5 | Planning complete | - |
 | 3. Multi-Vendor Providers | 0/2 (est.) | Not started | - |
 | 4. Ship to Users | 0/2 (est.) | Not started | - |
