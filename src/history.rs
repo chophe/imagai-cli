@@ -194,26 +194,30 @@ pub fn node_path(dir: &Path, filename: &str) -> Option<PathBuf> {
 /// `parent` chain cannot loop. Traversal stops descending at
 /// [`MAX_TREE_DEPTH`], so a deep chain in a hand-editable sidecar cannot abort
 /// the process; the stranded pass re-roots what the cap skipped, so every
-/// record stays visible. Children are ordered oldest-first by
-/// `(created, id)`; roots newest-first, descending.
+/// record stays visible. Children are ordered oldest-first and roots
+/// newest-first, both on sidecar position — append order, and the only
+/// deterministic tiebreak, because `created` has second resolution (WR-04).
 pub fn load_view(dir: &Path) -> anyhow::Result<HistoryView> {
     let records = read_records(dir)?;
     let known: HashSet<&str> = records.iter().map(|r| r.id.as_str()).collect();
 
-    let mut children_of: HashMap<&str, Vec<&HistoryRecord>> = HashMap::new();
-    let mut roots: Vec<&HistoryRecord> = Vec::new();
-    for r in &records {
+    let mut children_of: HashMap<&str, Vec<Indexed>> = HashMap::new();
+    let mut roots: Vec<Indexed> = Vec::new();
+    for (i, r) in records.iter().enumerate() {
         match r.parent.as_deref() {
             Some(p) if known.contains(p) && p != r.id.as_str() => {
-                children_of.entry(p).or_default().push(r);
+                children_of.entry(p).or_default().push((i, r));
             }
-            _ => roots.push(r),
+            _ => roots.push((i, r)),
         }
     }
-    // `created` is fixed-width ISO, so string ordering is chronological.
-    roots.sort_by(|a, b| (&b.created, &b.id).cmp(&(&a.created, &a.id)));
+    // `created` is fixed-width ISO, so string ordering is chronological — but it
+    // has second resolution, so two records written in the same second tie. The
+    // sidecar position breaks the tie; relying on the random uuid made sibling
+    // order arbitrary.
+    roots.sort_by(|a, b| (&b.1.created, b.0).cmp(&(&a.1.created, a.0)));
     for list in children_of.values_mut() {
-        list.sort_by(|a, b| (&a.created, &a.id).cmp(&(&b.created, &b.id)));
+        list.sort_by(|a, b| (&a.1.created, a.0).cmp(&(&b.1.created, b.0)));
     }
 
     let missing_count = records
@@ -231,11 +235,12 @@ pub fn load_view(dir: &Path) -> anyhow::Result<HistoryView> {
     // listing it as its own root keeps every record visible (D-20) while the
     // visited set keeps derivation bounded (T-02-02). Records below the depth
     // cap arrive here too, so the cap drops nothing (CR-04).
-    let mut stranded: Vec<&HistoryRecord> = records
+    let mut stranded: Vec<Indexed> = records
         .iter()
-        .filter(|r| !seen.contains(r.id.as_str()))
+        .enumerate()
+        .filter(|(_, r)| !seen.contains(r.id.as_str()))
         .collect();
-    stranded.sort_by(|a, b| (&b.created, &b.id).cmp(&(&a.created, &a.id)));
+    stranded.sort_by(|a, b| (&b.1.created, b.0).cmp(&(&a.1.created, a.0)));
     build_roots(&stranded, dir, &children_of, 0, &mut nodes, &mut seen);
 
     Ok(HistoryView {
@@ -246,15 +251,18 @@ pub fn load_view(dir: &Path) -> anyhow::Result<HistoryView> {
     })
 }
 
+/// A record plus its position in the sidecar, which is append order.
+type Indexed<'a> = (usize, &'a HistoryRecord);
+
 fn build_roots(
-    list: &[&HistoryRecord],
+    list: &[Indexed],
     dir: &Path,
-    children_of: &HashMap<&str, Vec<&HistoryRecord>>,
+    children_of: &HashMap<&str, Vec<Indexed>>,
     depth: usize,
     nodes: &mut Vec<HistoryNode>,
     seen: &mut HashSet<String>,
 ) {
-    for r in list {
+    for (_, r) in list {
         if !seen.contains(r.id.as_str()) {
             nodes.push(build_node(r, dir, children_of, depth, seen));
         }
@@ -264,7 +272,7 @@ fn build_roots(
 fn build_node(
     record: &HistoryRecord,
     dir: &Path,
-    children_of: &HashMap<&str, Vec<&HistoryRecord>>,
+    children_of: &HashMap<&str, Vec<Indexed>>,
     depth: usize,
     seen: &mut HashSet<String>,
 ) -> HistoryNode {
@@ -272,11 +280,11 @@ fn build_node(
     // Children already reached elsewhere are skipped, so a cyclic `parent`
     // chain in a hand-edited sidecar terminates and emits nothing twice
     // (T-02-02).
-    let child_records: Vec<&HistoryRecord> = children_of
+    let child_records: Vec<Indexed> = children_of
         .get(record.id.as_str())
         .map(|list| {
             list.iter()
-                .filter(|c| !seen.contains(c.id.as_str()))
+                .filter(|(_, c)| !seen.contains(c.id.as_str()))
                 .copied()
                 .collect()
         })
@@ -288,7 +296,7 @@ fn build_node(
     } else {
         child_records
             .into_iter()
-            .map(|c| build_node(c, dir, children_of, depth + 1, seen))
+            .map(|(_, c)| build_node(c, dir, children_of, depth + 1, seen))
             .collect()
     };
     let missing = match node_path(dir, &record.filename) {
@@ -1036,6 +1044,65 @@ mod tests {
             std::fs::read(history_path(dir.path())).expect("bytes after"),
             before,
             "the live sidecar is untouched"
+        );
+    }
+
+    #[test]
+    fn load_view_orders_same_second_records_by_sidecar_position() {
+        // WR-04: `created` has second resolution, so any two records written in
+        // the same second tie and then fell through to the random uuid,
+        // contradicting the documented children-oldest-first /
+        // roots-newest-first order. Append position is the tiebreak.
+        //
+        // The ids are chosen so the uuid order is the *reverse* of append
+        // order, which is what made the old behaviour a defect rather than a
+        // coincidence.
+        let dir = TempDir::new().unwrap();
+        write_store(
+            dir.path(),
+            &[
+                // Children: "zzz99999" is written first, "aaa11111" second.
+                record("root0001", None, "root.png", "2026-10-09T10:00:00"),
+                record(
+                    "zzz99999",
+                    Some("root0001"),
+                    "first.png",
+                    "2026-10-09T11:00:00",
+                ),
+                record(
+                    "aaa11111",
+                    Some("root0001"),
+                    "second.png",
+                    "2026-10-09T11:00:00",
+                ),
+                // Roots sharing the root's timestamp.
+                record("aaa11112", None, "third.png", "2026-10-09T10:00:00"),
+                record("ccc33333", None, "fourth.png", "2026-10-09T10:00:00"),
+            ],
+        );
+        let view = load_view(dir.path()).expect("view");
+        assert_eq!(view.nodes, 5);
+
+        let kids: Vec<&str> = view
+            .roots
+            .iter()
+            .find(|r| r.id == "root0001")
+            .expect("the root")
+            .children
+            .iter()
+            .map(|c| c.id.as_str())
+            .collect();
+        assert_eq!(
+            kids,
+            vec!["zzz99999", "aaa11111"],
+            "same-second children are oldest-first by append order, not by uuid"
+        );
+
+        let roots: Vec<&str> = view.roots.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(
+            roots,
+            vec!["ccc33333", "aaa11112", "root0001"],
+            "same-second roots are newest-append-first, not by uuid"
         );
     }
 
