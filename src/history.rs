@@ -792,6 +792,21 @@ mod tests {
     }
 
     #[test]
+    fn node_path_rejects_a_value_with_no_final_component() {
+        // IN-04: `web::output_dir_file` and `history::node_path` were two
+        // reductions of the same rule. `node_path` rejects a value with no
+        // usable final component; `output_dir_file` joined it anyway. One guard
+        // now serves both surfaces.
+        let dir = TempDir::new().unwrap();
+        assert_eq!(
+            node_path(dir.path(), "../../secrets.env"),
+            Some(dir.path().join("secrets.env"))
+        );
+        assert_eq!(node_path(dir.path(), ".."), None, "no final component");
+        assert_eq!(node_path(dir.path(), ""), None, "no final component");
+    }
+
+    #[test]
     fn load_view_survives_a_deep_chain_on_a_small_stack() {
         // CR-04: `build_node` recursed once per level with no bound, so a deep
         // `parent` chain aborted the process. The tokio worker that serves

@@ -253,15 +253,15 @@ async fn generate(State(state): State<AppState>, Json(payload): Json<GeneratePay
 }
 
 /// Reduce a client-supplied filename to its final component and join it
-/// under `dir`. That reduction is the traversal guard — the same call
-/// `serve_image` makes — so `../../.env` becomes `.env` inside `output_dir`
-/// rather than a path out of it. Returns `None` when the value has no usable
-/// final component.
+/// under `dir`. That reduction is the traversal guard, so `../../.env` becomes
+/// `.env` inside `output_dir` rather than a path out of it. Returns `None` when
+/// the value has no usable final component.
+///
+/// This is [`history::node_path`] — one guard, not two implementations with
+/// different rules (IN-04). The `HistoryNode` doc's claim that every consumer
+/// goes through this reduction is now true of `web.rs` too.
 fn output_dir_file(dir: &Path, raw: &str) -> Option<PathBuf> {
-    Path::new(raw)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .map(|name| dir.join(name))
+    crate::history::node_path(dir, raw)
 }
 
 /// True when `raw` is already a bare filename with no directory parts.

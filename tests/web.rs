@@ -712,6 +712,65 @@ async fn fork_endpoint_rejects_empty_prompt() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn fork_endpoint_refuses_a_missing_prompt_with_the_error_envelope() {
+    // IN-03: `prompt: String` was a required field, so a body without it got
+    // axum's plain-text 400 rather than the `{ "success": false, "error": … }`
+    // envelope every other handler in this file produces.
+    let mock = MockServer::start().await;
+    let out = TempDir::new().unwrap();
+    seed_source_png(out.path(), "cat.png");
+    let app = web::router(edit_capable_settings(&mock, out.path()));
+
+    let payload = json!({"from": "cat.png"});
+    let (status, value) = post_json(app, "/api/fork", &payload).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(value["success"], false);
+    assert_eq!(
+        value["error"].as_str(),
+        Some("Prompt cannot be empty."),
+        "the JSON envelope, not axum's plain-text 400: {value}"
+    );
+    assert!(mock.requests().is_empty(), "nothing was sent");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn fork_endpoint_reduces_a_traversal_shaped_record_filename() {
+    // Regression guard for the shared reduction (IN-04, T-02-01). A record
+    // filename can carry a `../` component, and the fork endpoint resolves it
+    // through `web::output_dir_file`, which is now `history::node_path`. The
+    // reduction must keep the final component and join it inside `output_dir` -
+    // never follow the traversal out of it. The two implementations behaved
+    // identically for every reachable input, so this pins the contract rather
+    // than reproducing a difference.
+    let mock = MockServer::start().await;
+    let out = TempDir::new().unwrap();
+    let name = "zz-probe-secrets.env";
+    seed_history_store(
+        out.path(),
+        &[json!({
+            "id": "1a2b3c4d", "parent": null,
+            "filename": format!("../../{name}"),
+            "prompt": "a cat", "model": "dall-e-3", "created": "2026-10-09T11:40:00"
+        })],
+    );
+    std::fs::write(out.path().join(name), b"in-dir").expect("in-dir file");
+    assert!(
+        !out.path().join(format!("../../{name}")).is_file(),
+        "precondition: the escaped path does not exist, so only a reduced lookup can succeed"
+    );
+    let app = web::router(edit_capable_settings(&mock, out.path()));
+
+    let payload = json!({"from": "1a2b3c4d", "prompt": "x"});
+    let (status, value) = post_json(app, "/api/fork", &payload).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        value["success"], true,
+        "resolved inside output_dir: {value}"
+    );
+    assert_eq!(mock.requests_for("/v1/images/edits").len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn fork_endpoint_rejects_more_than_sixteen_images() {
     let mock = MockServer::start().await;
     let out = TempDir::new().unwrap();
