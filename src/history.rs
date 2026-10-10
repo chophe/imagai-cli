@@ -381,8 +381,10 @@ fn adopt_root(dir: &Path, path: &Path) -> anyhow::Result<String> {
 ///
 /// 1. a unique id-prefix match against record ids;
 /// 2. an exact `filename` match against a record;
-/// 3. an existing file — auto-adopted as a root node when it sits in `dir`,
-///    otherwise handed back untracked (D-22);
+/// 3. an existing file — a separator-carrying path used literally and left
+///    untracked (D-22), or a bare filename resolved inside `dir` and
+///    auto-adopted as a root node (D-12). A bare name is never resolved
+///    against the process CWD (CR-01);
 /// 4. otherwise a bail naming what is missing.
 ///
 /// The three error sentences below are the Copywriting Contract's verbatim
@@ -416,26 +418,22 @@ pub fn resolve_fork_source(dir: &Path, from: &str) -> anyhow::Result<ForkSource>
         return node_source(dir, record);
     }
 
-    // (3) an existing file: the literal path the operator named, or — when the
-    // name is a bare filename — that same name inside `dir`. A value carrying a
-    // separator is never joined onto `dir`: `is_plain_filename` refuses it on
-    // the web surface, and a traversal-looking name is not silently reduced
-    // here either.
+    // (3) an existing file. A value carrying a separator is the literal path
+    // the operator named: it stays out of the store (D-22). A bare filename is
+    // resolved *inside `dir` only* — never against the process working
+    // directory. The web surface binds 0.0.0.0 with `allow_origin(Any)`, so a
+    // CWD-relative resolution would hand a server-side file to whichever
+    // browser asked for it (CR-01). It is also the only way the `recorded:
+    // true` adoption branch is reachable when the CWD *is* `dir` (CR-03).
     let literal = Path::new(from);
-    if literal.is_file() {
-        if literal.parent() == Some(dir) {
-            adopt_root(dir, literal)?;
+    if from.contains('/') || from.contains('\\') {
+        if literal.is_file() {
             return Ok(ForkSource::File {
                 path: literal.to_path_buf(),
-                recorded: true,
+                recorded: false,
             });
         }
-        return Ok(ForkSource::File {
-            path: literal.to_path_buf(),
-            recorded: false,
-        });
-    }
-    if !from.contains('/') && !from.contains('\\') {
+    } else {
         let in_dir = dir.join(from);
         if in_dir.is_file() {
             adopt_root(dir, &in_dir)?;

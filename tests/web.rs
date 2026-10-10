@@ -699,6 +699,38 @@ async fn fork_endpoint_reports_unknown_from() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn fork_endpoint_refuses_a_file_that_lives_only_in_the_cwd() {
+    // CR-01: the resolver's file step resolved a bare name against the process
+    // working directory before `output_dir`. This endpoint binds 0.0.0.0 with
+    // `allow_origin(Any)`, so any origin could make it read a server-side file
+    // and upload its bytes. The file below exists only in the CWD.
+    let mock = MockServer::start().await;
+    let out = TempDir::new().unwrap();
+    let cwd = std::env::current_dir().expect("cwd");
+    // Unique per test binary so a parallel test cannot see it.
+    let probe = cwd.join("cwd_probe_cr01_web.png");
+    seed_source_png(&cwd, "cwd_probe_cr01_web.png");
+
+    let app = web::router(edit_capable_settings(&mock, out.path()));
+    let payload = json!({"from": "cwd_probe_cr01_web.png", "prompt": "x"});
+    let (status, value) = post_json(app, "/api/fork", &payload).await;
+
+    let _ = std::fs::remove_file(&probe);
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(value["success"], false);
+    assert!(
+        mock.requests().is_empty(),
+        "a CWD-resident file is never read or uploaded: {:?}",
+        mock.requests()
+    );
+    assert!(
+        !out.path().join(".imagai-history.json").exists(),
+        "and it is never adopted as a root node"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn history_form_is_served_with_fork_controls() {
     let mock = MockServer::start().await;
     let out = TempDir::new().unwrap();

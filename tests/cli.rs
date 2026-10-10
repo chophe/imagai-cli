@@ -923,6 +923,71 @@ async fn fork_from_filename_of_adopted_file() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn fork_from_a_file_that_lives_only_in_the_cwd_is_refused() {
+    // CR-01: the resolver's file step resolved a bare name against the process
+    // working directory before looking inside `output_dir`, so a CWD-resident
+    // file was read and uploaded. The web surface binds 0.0.0.0 with
+    // `allow_origin(Any)`, which made that a trust-boundary break.
+    let mock = MockServer::start().await;
+    let out = TempDir::new().unwrap();
+    let cwd = TempDir::new().unwrap();
+    seed_source_png(cwd.path(), "probe_cwd_only.png");
+
+    cmd_edit(&mock, out.path())
+        .current_dir(cwd.path())
+        .args(["fork", "--from", "probe_cwd_only.png", "-p", "x"])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "No history node or image named 'probe_cwd_only.png' in",
+        ));
+
+    // Nothing was read, nothing was sent, and nothing was adopted.
+    assert!(
+        mock.requests().is_empty(),
+        "no provider call for a CWD-only file"
+    );
+    assert!(
+        !out.path().join(".imagai-history.json").exists(),
+        "a CWD-only file is never adopted as a root"
+    );
+    assert!(
+        !out.path().join("probe_cwd_only.png").exists(),
+        "no file was created inside output_dir"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn fork_from_a_bare_file_when_cwd_is_output_dir_adopts_it() {
+    // CR-03: when the CWD *is* `output_dir`, the old step (3) compared the
+    // literal's parent (`Some("")`) against `Some(dir)`, so the adoption branch
+    // was unreachable — the child recorded as a root and its lineage was
+    // silently dropped.
+    let mock = MockServer::start().await;
+    let out = TempDir::new().unwrap();
+    seed_source_png(out.path(), "cat.png");
+
+    cmd_edit(&mock, out.path())
+        .current_dir(out.path())
+        .args(["fork", "--from", "cat.png", "-p", "make it sunset"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("🔀 Forking from cat.png"));
+
+    let text = std::fs::read_to_string(out.path().join(".imagai-history.json")).expect("sidecar");
+    let value: serde_json::Value = serde_json::from_str(&text).expect("parses");
+    let records = value.as_array().expect("array");
+    assert_eq!(records.len(), 2, "adopted root plus the fork child");
+    assert_eq!(records[0]["filename"], "cat.png");
+    assert!(records[0]["parent"].is_null(), "adopted as a root");
+    assert_eq!(
+        records[1]["parent"], records[0]["id"],
+        "CR-03: the child keeps its parent instead of recording as a root"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn fork_keeps_both_branches_visible() {
     let mock = MockServer::start().await;
     let out = TempDir::new().unwrap();

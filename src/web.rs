@@ -582,6 +582,18 @@ async fn fork(State(state): State<AppState>, Json(payload): Json<ForkPayload>) -
             path
         }
         Ok(crate::history::ForkSource::File { path, .. }) => {
+            // Defense in depth: the resolver already refuses to leave `dir` with
+            // a bare name, so a `File` source whose parent is not `dir` means a
+            // separator-carrying path reached us — which `is_plain_filename`
+            // above refuses. Never hand an out-of-dir file to the provider
+            // (CR-01).
+            if path.parent() != Some(dir.as_path()) {
+                return Json(json!({
+                    "success": false,
+                    "error": format!("'{from}' is not inside output_dir")
+                }))
+                .into_response();
+            }
             if !path.is_file() {
                 let name = path
                     .file_name()
