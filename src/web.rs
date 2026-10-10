@@ -90,6 +90,11 @@ struct EditPayload {
 /// boundary `/api/edit` applies to every path-shaped field.
 #[derive(Deserialize)]
 struct ForkPayload {
+    // `serde(default)` so a body with no `prompt` reaches the same
+    // `{ "success": false, "error": … }` envelope every other handler produces,
+    // instead of axum's plain-text 400 (IN-03). The emptiness check below is
+    // what rejects it.
+    #[serde(default)]
     prompt: String,
     #[serde(default)]
     engine: Option<String>,
