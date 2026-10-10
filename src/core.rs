@@ -100,7 +100,17 @@ pub async fn generate_image_core(
         } else if request.random_filename {
             suffix_numbered(&generate_random_filename(&output_ext), i, request.n)
         } else {
-            generate_filename(Some(&request.prompt), &output_ext)
+            // CR-06: the sibling branches all disambiguate with `suffix_numbered`.
+            // `generate_filename` derives the name from the prompt plus a
+            // second-resolution timestamp, so with `n > 1` every iteration in
+            // the same second produced one identical path — the first image was
+            // overwritten while both results reported success, and the sidecar
+            // then held two records claiming one filename.
+            suffix_numbered(
+                &generate_filename(Some(&request.prompt), &output_ext),
+                i,
+                request.n,
+            )
         };
 
         let output_file_path = settings.output_dir.join(&current_filename);

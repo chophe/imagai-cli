@@ -365,3 +365,66 @@ async fn explicit_output_with_multiple_images() {
     assert!(out_path.join("out_1.png").exists());
     assert!(out_path.join("out_2.png").exists());
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn default_filename_with_multiple_images_does_not_collide() {
+    // CR-06: the default branch was the only one missing the `suffix_numbered`
+    // treatment its siblings use. `generate_filename` embeds a
+    // second-resolution timestamp, so with `n: 2` both iterations produced the
+    // identical path — one file on disk, two records claiming it, both results
+    // reporting success.
+    let mock = MockServer::start().await;
+    mock.set_images_mode(common::ImagesMode::B64 { count: 2 });
+    let out = TempDir::new().unwrap();
+    let out_path = out.path().to_path_buf();
+    let settings = Settings {
+        output_dir: out_path.clone(),
+        default_engine: Some("mock".to_string()),
+        engines: HashMap::from([(
+            "mock".to_string(),
+            EngineConfig {
+                api_key: "test".to_string(),
+                base_url: Some(mock.base_url()),
+                model: Some("dall-e-3".to_string()),
+            },
+        )]),
+    };
+
+    let request = ImageGenerationRequest {
+        prompt: "a cat".to_string(),
+        engine: "mock".to_string(),
+        n: 2,
+        ..Default::default()
+    };
+
+    let results = generate_image_core(&request, &settings).await;
+    assert_eq!(results.len(), 2);
+    let saved: Vec<&str> = results
+        .iter()
+        .map(|r| r.saved_path.as_deref().expect("saved"))
+        .collect();
+    assert_ne!(saved[0], saved[1], "two distinct paths");
+    assert!(saved[0].ends_with("_1.png"), "{saved:?}");
+    assert!(saved[1].ends_with("_2.png"), "{saved:?}");
+
+    let files = list_png_files(&out_path);
+    assert_eq!(files.len(), 2, "both images survive: {files:?}");
+
+    // The store records two distinct filenames, not one shared node.
+    let text = std::fs::read_to_string(out_path.join(".imagai-history.json")).expect("sidecar");
+    let value: serde_json::Value = serde_json::from_str(&text).expect("parses");
+    let records = value.as_array().expect("array");
+    assert_eq!(records.len(), 2);
+    assert_ne!(records[0]["filename"], records[1]["filename"]);
+}
+
+fn list_png_files(dir: &std::path::Path) -> Vec<String> {
+    let mut files: Vec<String> = std::fs::read_dir(dir)
+        .expect("read output dir")
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|n| n.ends_with(".png"))
+        .collect();
+    files.sort();
+    files
+}
