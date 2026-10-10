@@ -4,10 +4,10 @@ current_phase: 2
 current_phase_name: Branching & Iteration History
 status: phase-complete
 stopped_at: Phase 02 complete (4/4 plans), ready to plan Phase 3
-last_updated: "2026-10-10T01:20:00.000Z"
+last_updated: "2026-10-10T04:26:59.319Z"
 last_activity: 2026-10-10
 last_activity_desc: Phase 02 complete, transitioned to Phase 3
-state_head: 6b4b92838ccf2d46c7665b57223cb5fa278b722a
+state_head: 7f0d8204c5f2e675dc3ce1b2b4950e516fe3d327
 progress:
   total_phases: 4
   completed_phases: 2
@@ -83,6 +83,7 @@ None yet.
 
 - `created`/`modified` gallery timestamps both derive from mtime — recorded bug, owned by a future phase (Phase 2 shipped real node timestamps in `.imagai-history.json`; the gallery display is untouched)
 - History has no prune/delete/gc surface (D-21 defers it) and a hand-edited sidecar's `../` filename is reduced to its final component before any join (T-02-01)
+- Phase 2 G-1: a second fork from the same source overwrites the first forked image (src/core.rs:85 plus the else-base arm at src/core.rs:88-89; n is always 1 so line 87 suffix_numbered never runs). Two forks from one node id wrote one file while the sidecar held two records naming it, and history marked neither missing. Fix route: code-review-fix dispatch.
 
 ## Deferred Items
 
