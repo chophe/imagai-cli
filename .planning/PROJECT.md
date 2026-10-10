@@ -2,7 +2,7 @@
 
 ## What This Is
 
-A single Rust binary (`imagai`) that generates and edits images — and eventually video — through three interchangeable surfaces: CLI, TUI, and embedded web UI. It talks to AI image/video providers directly, so users drive generation, editing, and iteration from one tool instead of hopping between provider web UIs. Built to be handed to other users.
+A single Rust binary (`imagai`) that generates and edits images — and eventually video — through three interchangeable surfaces: CLI, TUI, and embedded web UI, with every saved result recorded in a forkable iteration history (`imagai history` tree, `imagai fork --from`). It talks to AI image/video providers directly, so users drive generation, editing, and iteration from one tool instead of hopping between provider web UIs. Built to be handed to other users.
 
 ## Core Value
 
@@ -23,16 +23,17 @@ One command → one generated or edited image, from any surface, against any con
 - ✓ Image editing from explicit path, past result, or multi-reference (`imagai edit`) — Phase 1 (EDIT-01)
 - ✓ Newest-output auto-pick + shared `list_output_images` helper across CLI/web — Phase 1 (EDIT-02)
 - ✓ Multi-reference edits with 16-image guard on all three surfaces — Phase 1 (EDIT-03)
+- ✓ **BRCH-01**: View an iteration history for an image and fork/branch any past result without losing the original lineage (`.imagai-history.json` sidecar, `imagai history` tree, TUI History tab, web `/api/history`) — Phase 2
+- ✓ **BRCH-02**: Branching and editing work identically on all three surfaces (CLI, TUI, web) (one recorder in `generate_image_core`, one `HistoryView` serializer, one `resolve_fork_source` resolver) — Phase 2
 
 ### Active
 
 <!-- Current scope. Hypotheses until shipped and validated. -->
 
-- [ ] **BRCH-01**: User can view an iteration history for an image and fork/branch any past result into a new edit without losing the original lineage
-- [ ] **BRCH-02**: Branching and editing work identically on all three surfaces (CLI, TUI, web)
 - [ ] **PRVD-01**: User can configure named non-OpenAI-compatible providers (multi-vendor adapters) alongside existing OpenAI-compatible engines, selected per request
 - [ ] **VID-01**: User can generate video from a text prompt through a configured video provider (later phase — image work ships first)
 - [ ] **DIST-01**: Other users can install and run the tool from a single binary with clear provider setup docs
+- [ ] History-tree UI polish from the advisory UI review (`.planning/phases/02-branching-iteration-history/02-UI-REVIEW.md`, 14/24 — non-blocking follow-ups: TUI overflow indicator never renders, web missing the empty-state sentence, TUI detail-pane over-wrap, SPA UTF-16 label slicing) — surfaced by Phase 2, not yet scheduled
 
 ### Out of Scope
 
@@ -66,11 +67,19 @@ One command → one generated or edited image, from any surface, against any con
 
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
-| Branching = single-step edit AND forkable history | User wants to edit a chosen image and keep a branchable lineage of iterations | — Pending |
+| Branching = single-step edit AND forkable history | User wants to edit a chosen image and keep a branchable lineage of iterations | Validated — Phase 2 shipped history + fork on all three surfaces |
 | Video deferred to a later phase; images first | Video needs a separate (non-OpenAI-compatible) provider integration; images path already exists | — Pending |
 | Multi-vendor providers, not OpenAI-compatible-only | User will use named non-compatible vendors (incl. video) | — Pending |
-| Ship across all three surfaces (CLI, TUI, web) | Existing architecture already guarantees parity via shared core; new features must land on all three | Validated — Phase 1 shipped edit parity on all three |
+| Ship across all three surfaces (CLI, TUI, web) | Existing architecture already guarantees parity via shared core; new features must land on all three | Validated — Phase 1 shipped edit parity, Phase 2 shipped branching parity |
 | Audience = other users | Drives distribution (DIST-01) and setup documentation | — Pending |
+| D-08: history lives in one `.imagai-history.json` sidecar inside `output_dir` | A local single-user tool gets a local store; no new dependency, no schema migration path | Validated — Phase 2 |
+| D-10: pre-existing files are lazily adopted as roots | `(unknown prompt)` adoption beats a store that only knows post-Phase-2 files | Validated — Phase 2 |
+| D-11: whole-sidecar read-modify-write per save | D-08's locked cost; write is temp-file + `rename`, so an interrupted write never destroys the store | Validated — Phase 2 |
+| D-13: fork references the same file, never copies it | Forks append a record; the named original is never modified (T-02-06) | Validated — Phase 2 |
+| D-14: step-back is forward-only (choose an ancestor id as `--from`) | Nothing is rewound or deleted; history is append-only by construction | Validated — Phase 2 |
+| D-23: record filenames relative to `output_dir` only | Moving the folder keeps history valid | Validated — Phase 2 |
+| 02-05: a filename claim has two halves (file on disk + sidecar record); `history::filename_taken` probes both and an unreadable sidecar reads as taken | Mirror of CR-06 for the `source_image` arm: a kept-but-missing node (D-20) still owns its name, and the safe direction is to disambiguate, never overwrite | Validated — Phase 2 (`56984f8`'s security round re-ran green) |
+| Security-fix guard: reduce a record `filename` through `history::node_path` at the CLI's last join before the read | T-02-01/T-02-05/T-02-10: `--from <id8>` must not resolve an injected `../` record; one guard covers both `fork` and `edit` | Validated — Phase 2 (`56984f8`, 14/14 threats closed) |
 
 ## Context Paths
 
@@ -95,4 +104,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-10-09 after Phase 1*
+*Last updated: 2026-10-10 after Phase 2*

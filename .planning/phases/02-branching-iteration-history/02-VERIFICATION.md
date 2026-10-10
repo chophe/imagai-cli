@@ -1,6 +1,6 @@
 ---
 phase: 02-branching-iteration-history
-verified: 2026-10-10T09:46:55Z
+verified: 2026-10-10T16:11:36Z
 status: passed
 score: 24/24 must-haves verified
 covered_files:
@@ -17,17 +17,18 @@ covered_files:
   - tests/core.rs
   - tests/web.rs
   - web_interface.html
-covered_digest: "v3:sha256:20a084a947784f5ff7575e8b11b224e3a5b027b05394a92cb2ac3081f7ff5aa6"
+covered_digest: "v3:sha256:6a6f469bc0f6c29a37dd9bd8227d02eec963fc691a78edcd59052565fb35529d"
 behavior_unverified: 0
 overrides_applied: 0
-head: d92cd83c1d983a25145df7f14bb723eadc03ceba
+head: 411444199fd1d91479aea9a1a2030419276867c6
 re_verification:
-  previous_status: gaps_found
-  previous_score: 21/22
-  gaps_closed:
-    - "G-1 — A second fork from the same source overwrites the first fork's file, and the store then holds two nodes naming one file (truth #9, BRCH-02/BRCH-03)"
+  previous_status: passed
+  previous_score: 24/24
+  previous_head: d92cd83c1d983a25145df7f14bb723eadc03ceba
+  gaps_closed: []
   gaps_remaining: []
   regressions: []
+  reason: "Re-verification round: the T-02-01/T-02-05/T-02-10 security fix (56984f8, src/cli.rs + tests/cli.rs) landed after the previous pass, making the report stale. The CLI fork/edit --from paths were re-verified live and the full suite re-run — no regression."
 ---
 
 # Phase 02: Branching & Iteration History — Verification Report
@@ -39,10 +40,14 @@ of starting over.
 **Status:** passed
 **Re-verification:** Yes — after the G-1 gap closure (`5264a55` + `f5cf9c2`)
 
+**Re-verification:** Yes — twice. First after the G-1 gap closure (`5264a55` + `f5cf9c2`, report at `d92cd83`), then again after the T-02-01/T-02-05/T-02-10 security fix (`56984f8`) landed, which made the previous report stale: the fix touched covered files (`src/cli.rs`, `tests/cli.rs`) after the first re-verification pass. This round re-ran every check the change can affect against the live code at `4114441`.
+
 Config used: `workflow.verifier = true`, `workflow.human_verify_mode =
 "end-of-phase"`, `workflow.nyquist_validation = false`. Verification ran against
-the LIVE code on `main` at `d92cd83`, not against plan text. The previous report
-(`7f0d820`, status `gaps_found`, 21/22) is superseded by this one.
+the LIVE code on `main` at `4114441`, not against plan text. The `d92cd83` report
+(24/24) is superseded by this one only in frontmatter terms — its truth-by-truth
+evidence stands, and this round re-derived the digest and head and re-ran every
+check affected by the security fix.
 
 ## Goal Achievement
 
@@ -300,8 +305,38 @@ false }` (`src/history.rs:550-554`), so the child's `record_for_filename`
 lookup finds no record and `parent` is `None`. This does **not** contradict
 D-22, so it is not scored as an open blocker.
 
+### Security-fix re-verification round (`56984f8`, at `4114441`)
+
+The previous pass was verified at `d92cd83`; the security fix `56984f8` then
+changed `src/cli.rs` (+25/-2) and `tests/cli.rs` (+120), so this round re-ran
+every check the change can affect. All evidence below was produced in this
+round, not carried over.
+
+| Check | Result | Status |
+|-------|--------|--------|
+| Full suite | `cargo test` — lib 80 / main 0 / cli 43 / core 8 / web 35 = **166 passed, 0 failed** | ✓ PASS |
+| G-1 pair | `two_forks_from_one_source_keep_both_images` / `fork_keeps_both_branches_visible` — 1 passed each | ✓ PASS |
+| Security regressions | `fork_rejects_a_record_filename_that_escapes_output_dir` / `edit_from_refuses_a_separator_carrying_record_filename` — 1 passed each | ✓ PASS |
+| Tree grammar | `history_tree_prints_connectors` — 1 passed | ✓ PASS |
+| Probe units | `cargo test --lib filename_taken` — 4 passed | ✓ PASS |
+| Format | `cargo fmt --check` — exit 0, no diff | ✓ PASS |
+| Lints | `cargo clippy --all-targets` — Finished, zero `warning:`/`error:` lines | ✓ PASS |
+| Live truth #1/#2 | generate + edit into a seeded `IMAGAI__OUTPUT_DIR` → sidecar `.imagai-history.json` with 2 records; edit child `parent` = root id | ✓ PASS |
+| Live truths #6/#7 | `imagai history` printed the rooted ASCII tree (`+-`/`` `- `` connectors, id8, prompt field, filename, timestamp); `--json` emitted `{output_dir, nodes, missing, roots:[…]}` | ✓ PASS |
+| Live truths #9/#23/#24 | three forks from one root id → `…-edit_1.png`, `…-edit_2.png`, `…-edit_3.png` (canonical `…-edit.png` already claimed by the earlier edit), 5 nodes / 5 distinct records, all children parented to the root, no `✗`, no warning | ✓ PASS |
+| Live truth #11 | sidecar containing `not json` → `[Error] Could not read history at /tmp/…/.imagai-history.json: expected ident at line 1 column 2`, exit 1 | ✓ PASS |
+| Live security fix | sidecar record with `filename: "../escaped.png"`; `fork --from aaaaaaaa` and `edit --from aaaaaaaa` each exit 1 with `History node aaaaaaaaaaaaaaaa points at '../escaped.png', which is no longer in <output_dir>.`; mock provider request count unchanged (6 → 6); no escaped file on disk | ✓ PASS |
+
+Live runs used the real `target/debug/imagai` binary against a local mock
+OpenAI-compatible provider on `127.0.0.1:18731` (`IMAGAI__OUTPUT_DIR` in a temp
+dir, engine `mock` / model `gpt-image-1` so the edit capability gate admits image
+input). Mock server and scratch dir are outside the repo and untracked.
+
+**Score unchanged:** 24/24 truths verified (0 behavior-unverified). The security
+fix closed T-02-01/T-02-05/T-02-10 without regressing any Phase 2 truth.
+
 ---
 
-_Verified: 2026-10-10T09:46:55Z_
+_Verified: 2026-10-10T16:11:36Z_
 _Verifier: the agent (gsd-verifier)_
 _Evidence: cargo test 163 passed / 0 failed; cargo fmt --check exit 0; cargo clippy --all-targets clean; live CLI + web runs against a local mock OpenAI-compatible provider on 127.0.0.1:8731 (web on 127.0.0.1:8735); HEAD d92cd83_

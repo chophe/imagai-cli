@@ -60,7 +60,7 @@ Brownfield extension of the existing modular monolith (shared core `src/core.rs`
   3. User can step back to a prior branch point and continue iterating from it
   4. Editing and branching behave identically on CLI, TUI, and web (same history, same operations)
 
-**Plans**: 5/5 plans executed
+**Plans**: 5/5 plans complete
 **Wave 1**
 
 - [x] 02-01-PLAN.md — The persistence layer: `.imagai-history.json` sidecar store in `src/history.rs` plus the recording hook on `generate_image_core`, so every saved image gets a lineage node (D-08, D-09, D-11, D-20, D-22, D-23)
@@ -131,6 +131,6 @@ Brownfield extension of the existing modular monolith (shared core `src/core.rs`
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Image Editing | 5/5 | Complete    | 2026-10-09 |
-| 2. Branching & Iteration History | 5/5 | Planning complete | - |
+| 2. Branching & Iteration History | 5/5 | Complete    | 2026-10-10 |
 | 3. Multi-Vendor Providers | 0/2 (est.) | Not started | - |
 | 4. Ship to Users | 0/2 (est.) | Not started | - |
