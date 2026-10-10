@@ -81,10 +81,23 @@ pub struct HistoryView {
 /// source by name still name the node it belongs to.
 pub fn node_id_for(dir: &Path, filename: &str) -> Option<String> {
     let records = read_records(dir).ok()?;
-    records
-        .iter()
-        .find(|r| r.filename == filename)
-        .map(|r| r.id.clone())
+    record_for_filename(&records, filename).map(|r| r.id.clone())
+}
+
+/// The record for `filename`, when one exists.
+///
+/// Filenames are not unique: a sidecar can hold several records with the same
+/// name — a hand edit, or a regenerate after a delete. Resolution is
+/// deterministic, and it is the **newest** match that wins: the last one in
+/// sidecar (append) order, which is the node an edit of that file most
+/// plausibly branched from. The first (oldest) match used to win, so lineage
+/// was attached to a stale root while the newest branch went unrecorded
+/// (CR-05).
+fn record_for_filename<'a>(
+    records: &'a [HistoryRecord],
+    filename: &str,
+) -> Option<&'a HistoryRecord> {
+    records.iter().rev().find(|r| r.filename == filename)
 }
 
 /// A resolved fork source, in the order `resolve_fork_source` tries (D-12).
@@ -312,11 +325,13 @@ pub fn record_result(
     let existing: Vec<String> = records.iter().map(|r| r.id.clone()).collect();
     let id = new_node_id(&existing);
     // D-09: the parent is the node whose filename matches the source's own
-    // basename; a plain generation (no source, or no match) is a root.
+    // basename; a plain generation (no source, or no match) is a root. A
+    // filename is not unique, so the newest record wins — see
+    // `record_for_filename`.
     let parent = source
         .and_then(|s| Path::new(s).file_name())
         .and_then(|n| n.to_str())
-        .and_then(|name| records.iter().find(|r| r.filename == name))
+        .and_then(|name| record_for_filename(&records, name))
         .map(|r| r.id.clone());
 
     let record = HistoryRecord {
@@ -448,8 +463,10 @@ pub fn resolve_fork_source(dir: &Path, from: &str) -> anyhow::Result<ForkSource>
         }
     }
 
-    // (2) exact filename
-    if let Some(record) = records.iter().find(|r| r.filename == from) {
+    // (2) exact filename. Filenames are not unique, so the newest record
+    // matching the name wins — deterministic, and the branch an edit of that
+    // file most plausibly came from (CR-05).
+    if let Some(record) = record_for_filename(&records, from) {
         return node_source(dir, record);
     }
 
@@ -920,6 +937,51 @@ mod tests {
         assert!(read_records(dir.path())
             .expect("no sidecar is fine")
             .is_empty());
+    }
+
+    #[test]
+    fn a_duplicate_filename_resolves_to_the_newest_record() {
+        // CR-05: both parent lookups took the first (oldest) match, so with two
+        // records sharing a filename lineage was attached to a stale root while
+        // the newest branch went unrecorded. Resolution is now the newest
+        // record — deterministic, and the branch the edit plausibly came from.
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("cat.png"), b"x").expect("file");
+        write_store(
+            dir.path(),
+            &[
+                record("aaa11111", None, "cat.png", "2026-10-09T10:00:00"),
+                record("bbb22222", None, "cat.png", "2026-10-09T12:00:00"),
+            ],
+        );
+
+        assert_eq!(
+            node_id_for(dir.path(), "cat.png").as_deref(),
+            Some("bbb22222"),
+            "the newest record wins"
+        );
+        match resolve_fork_source(dir.path(), "cat.png").expect("resolves") {
+            ForkSource::Node { id, .. } => assert_eq!(id, "bbb22222"),
+            _ => panic!("expected a node source"),
+        }
+
+        // And an edit whose source is that filename links to the same node.
+        let child = dir.path().join("cat-edit.png");
+        record_result(
+            dir.path(),
+            &child,
+            "make it sunset",
+            "gpt-image-1",
+            Some(dir.path().join("cat.png").to_str().expect("utf-8")),
+        )
+        .expect("recorded");
+        let records = read_records(dir.path()).expect("sidecar");
+        assert_eq!(records.len(), 3);
+        assert_eq!(
+            records[2].parent.as_deref(),
+            Some("bbb22222"),
+            "CR-05: the child links to the newest record, not the stale one"
+        );
     }
 
     #[test]
