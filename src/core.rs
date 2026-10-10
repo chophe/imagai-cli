@@ -161,15 +161,22 @@ pub async fn generate_image_core(
         if let Some(path) = saved_path {
             // One recording point for every surface (BRCH-04): anything that
             // lands in output_dir gets a lineage node. A failed sidecar write
-            // must not fail a generation whose image is already on disk —
-            // lazy adoption (D-10) recovers the node on the next read.
-            let _ = crate::history::record_result(
+            // must not fail a generation whose image is already on disk — lazy
+            // adoption (D-10) recovers the node on the next read — but it is
+            // no longer silent (WR-01): the operator is told the lineage was
+            // not recorded.
+            if let Err(e) = crate::history::record_result(
                 &settings.output_dir,
                 &path,
                 &request.prompt,
                 &model_name,
                 request.source_image.as_deref(),
-            );
+            ) {
+                eprintln!(
+                    "[warning] Lineage was not recorded for {}: {e}",
+                    path.display()
+                );
+            }
             api_response.saved_path = Some(path.to_string_lossy().to_string());
         } else if api_response.error.is_none() {
             api_response.error = Some(format!("Failed to save image to {output_file_path:?}"));

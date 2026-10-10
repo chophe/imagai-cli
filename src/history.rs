@@ -7,9 +7,11 @@
 //! (BRCH-04).
 //!
 //! The store is deliberately simple: read-modify-write of the whole sidecar per
-//! save, no locking, no journal, no compaction (D-11). It is a single-user
-//! local tool, and a failed write is never fatal — lazy adoption (D-10)
-//! recovers the node on the next read.
+//! save, no locking, no compaction (D-11). A failed write is never fatal to the
+//! generation whose image is already on disk, but it is no longer invisible —
+//! the write itself is atomic (temp file plus `rename`), so an interrupted
+//! write leaves the previous sidecar intact rather than a truncated one, and
+//! `generate_image_core` reports the failure to the operator.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -140,12 +142,21 @@ pub fn read_records(dir: &Path) -> anyhow::Result<Vec<HistoryRecord>> {
 }
 
 /// The D-11 read-modify-write: read the whole sidecar, append, write it back.
-/// No locking, no journal, no compaction — a locked decision.
+/// No locking, no compaction — a locked decision.
+///
+/// The write goes to a temp file beside the sidecar and is then `rename`d over
+/// it, which is atomic within one filesystem. `fs::write` on the sidecar itself
+/// truncates before writing, so an interrupted write left a sidecar that failed
+/// to parse — and once an unreadable store is an error (CR-02), every surface
+/// then refused to start until an operator hand-repaired it (WR-01). A failed
+/// write also never destroys the previous content.
 pub fn append_records(dir: &Path, new: &[HistoryRecord]) -> anyhow::Result<()> {
     let mut records = read_records(dir)?;
     records.extend_from_slice(new);
     let json = serde_json::to_string_pretty(&records)?;
-    std::fs::write(history_path(dir), format!("{json}\n"))?;
+    let temp = dir.join(format!("{HISTORY_FILENAME}.tmp"));
+    std::fs::write(&temp, format!("{json}\n"))?;
+    std::fs::rename(&temp, history_path(dir))?;
     Ok(())
 }
 
@@ -981,6 +992,50 @@ mod tests {
             records[2].parent.as_deref(),
             Some("bbb22222"),
             "CR-05: the child links to the newest record, not the stale one"
+        );
+    }
+
+    #[test]
+    fn append_records_is_atomic_and_leaves_no_temp_file() {
+        // WR-01: the sidecar was written in place with `fs::write`, which
+        // truncates before it writes — an interrupted write left a sidecar that
+        // failed to parse. The write now goes to a sibling temp file and is
+        // renamed over the sidecar.
+        let dir = TempDir::new().unwrap();
+        let first = record("aaa11111", None, "a.png", "2026-10-09T10:00:00");
+        append_records(dir.path(), std::slice::from_ref(&first)).expect("first append");
+        let second = record("bbb22222", Some("aaa11111"), "b.png", "2026-10-09T11:00:00");
+        append_records(dir.path(), std::slice::from_ref(&second)).expect("second append");
+
+        let records = read_records(dir.path()).expect("sidecar");
+        assert_eq!(records.len(), 2, "the earlier record survives the append");
+        assert!(
+            !dir.path().join(".imagai-history.json.tmp").exists(),
+            "no temp file is left behind"
+        );
+    }
+
+    #[test]
+    fn a_failed_sidecar_write_keeps_the_previous_content() {
+        // WR-01, the property that matters: the live sidecar is never opened for
+        // writing, so a write that fails cannot destroy the operator's history.
+        let dir = TempDir::new().unwrap();
+        let first = record("aaa11111", None, "a.png", "2026-10-09T10:00:00");
+        append_records(dir.path(), std::slice::from_ref(&first)).expect("first append");
+        let before = std::fs::read(history_path(dir.path())).expect("bytes before");
+
+        // Occupying the temp path makes the write itself fail.
+        std::fs::create_dir(dir.path().join(".imagai-history.json.tmp"))
+            .expect("occupy the temp path");
+        let second = record("bbb22222", Some("aaa11111"), "b.png", "2026-10-09T11:00:00");
+        assert!(
+            append_records(dir.path(), std::slice::from_ref(&second)).is_err(),
+            "the failed write is reported, not swallowed"
+        );
+        assert_eq!(
+            std::fs::read(history_path(dir.path())).expect("bytes after"),
+            before,
+            "the live sidecar is untouched"
         );
     }
 
