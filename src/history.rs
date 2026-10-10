@@ -20,6 +20,20 @@ use serde::{Deserialize, Serialize};
 /// Filename of the lineage sidecar inside `output_dir` (D-08).
 pub const HISTORY_FILENAME: &str = ".imagai-history.json";
 
+/// A tree deeper than this is not descended into by [`load_view`] or the TUI
+/// flattener.
+///
+/// The sidecar is hand-editable by design, and a deep `parent` chain is
+/// ordinary use rather than corruption — 900 sequential edits of one image is a
+/// plausible history. `build_node` used to recurse once per level with no
+/// bound, which aborts the process: ~900 levels kill a 2 MB tokio worker
+/// (every web handler) and ~6 000 kill the 8 MB main thread (CLI, TUI). The
+/// cap lives here, in the shared read path, so no surface can be killed.
+///
+/// Records below the cap are not dropped: the stranded pass re-roots them, so
+/// every record stays visible (D-20) on a bounded stack.
+pub const MAX_TREE_DEPTH: usize = 64;
+
 /// One persisted lineage record. Exactly what the sidecar holds — no derived
 /// state. `id` and `filename` are the identity of a record and carry no
 /// `#[serde(default)]`, so a hand-truncated sidecar still loads.
@@ -153,7 +167,10 @@ pub fn node_path(dir: &Path, filename: &str) -> Option<PathBuf> {
 /// a hand-edited sidecar cannot attach a subtree to nothing (T-02-02).
 /// Derivation indexes the records by parent in a single pass rather than
 /// recursing over them, and the builder carries a visited set, so a cyclic
-/// `parent` chain cannot loop. Children are ordered oldest-first by
+/// `parent` chain cannot loop. Traversal stops descending at
+/// [`MAX_TREE_DEPTH`], so a deep chain in a hand-editable sidecar cannot abort
+/// the process; the stranded pass re-roots what the cap skipped, so every
+/// record stays visible. Children are ordered oldest-first by
 /// `(created, id)`; roots newest-first, descending.
 pub fn load_view(dir: &Path) -> anyhow::Result<HistoryView> {
     let records = read_records(dir)?;
@@ -185,16 +202,17 @@ pub fn load_view(dir: &Path) -> anyhow::Result<HistoryView> {
 
     let mut seen: HashSet<String> = HashSet::new();
     let mut nodes: Vec<HistoryNode> = Vec::new();
-    build_roots(&roots, dir, &children_of, &mut nodes, &mut seen);
+    build_roots(&roots, dir, &children_of, 0, &mut nodes, &mut seen);
     // A record stranded in a cyclic `parent` chain is reachable from no root;
     // listing it as its own root keeps every record visible (D-20) while the
-    // visited set keeps derivation bounded (T-02-02).
+    // visited set keeps derivation bounded (T-02-02). Records below the depth
+    // cap arrive here too, so the cap drops nothing (CR-04).
     let mut stranded: Vec<&HistoryRecord> = records
         .iter()
         .filter(|r| !seen.contains(r.id.as_str()))
         .collect();
     stranded.sort_by(|a, b| (&b.created, &b.id).cmp(&(&a.created, &a.id)));
-    build_roots(&stranded, dir, &children_of, &mut nodes, &mut seen);
+    build_roots(&stranded, dir, &children_of, 0, &mut nodes, &mut seen);
 
     Ok(HistoryView {
         output_dir: dir.to_string_lossy().to_string(),
@@ -208,12 +226,13 @@ fn build_roots(
     list: &[&HistoryRecord],
     dir: &Path,
     children_of: &HashMap<&str, Vec<&HistoryRecord>>,
+    depth: usize,
     nodes: &mut Vec<HistoryNode>,
     seen: &mut HashSet<String>,
 ) {
     for r in list {
         if !seen.contains(r.id.as_str()) {
-            nodes.push(build_node(r, dir, children_of, seen));
+            nodes.push(build_node(r, dir, children_of, depth, seen));
         }
     }
 }
@@ -222,6 +241,7 @@ fn build_node(
     record: &HistoryRecord,
     dir: &Path,
     children_of: &HashMap<&str, Vec<&HistoryRecord>>,
+    depth: usize,
     seen: &mut HashSet<String>,
 ) -> HistoryNode {
     seen.insert(record.id.clone());
@@ -237,10 +257,16 @@ fn build_node(
                 .collect()
         })
         .unwrap_or_default();
-    let children = child_records
-        .into_iter()
-        .map(|c| build_node(c, dir, children_of, seen))
-        .collect();
+    // CR-04: the depth cap is what keeps this recursion bounded. Descending
+    // stops here, and the stranded pass re-roots what was skipped.
+    let children = if depth >= MAX_TREE_DEPTH {
+        Vec::new()
+    } else {
+        child_records
+            .into_iter()
+            .map(|c| build_node(c, dir, children_of, depth + 1, seen))
+            .collect()
+    };
     let missing = match node_path(dir, &record.filename) {
         Some(p) => !p.is_file(),
         None => true,
@@ -702,6 +728,41 @@ mod tests {
             out.push(n.id.clone());
             collect_ids(&n.children, out);
         }
+    }
+
+    #[test]
+    fn load_view_survives_a_deep_chain_on_a_small_stack() {
+        // CR-04: `build_node` recursed once per level with no bound, so a deep
+        // `parent` chain aborted the process. The tokio worker that serves
+        // every web handler runs on a 2 MB stack and dies at roughly 900
+        // levels; a 512 KiB one makes the pre-fix overflow unmistakable.
+        let dir = TempDir::new().unwrap();
+        let chain = 900;
+        let mut store = Vec::with_capacity(chain);
+        for i in 0..chain {
+            store.push(HistoryRecord {
+                id: format!("{i:08x}"),
+                parent: (i > 0).then(|| format!("{:08x}", i - 1)),
+                filename: format!("img{i}.png"),
+                prompt: String::new(),
+                model: "dall-e-3".to_string(),
+                created: "2026-10-09T10:00:00".to_string(),
+            });
+        }
+        write_store(dir.path(), &store);
+
+        let path = dir.path().to_path_buf();
+        let handle = std::thread::Builder::new()
+            .stack_size(512 * 1024)
+            .spawn(move || load_view(&path).expect("a deep chain must not abort"))
+            .expect("spawn");
+        let view = handle.join().expect("no stack overflow");
+
+        assert_eq!(view.nodes, chain, "every record is counted");
+        // D-20: the depth cap re-roots what it skipped, so nothing is dropped.
+        let mut ids = Vec::new();
+        collect_ids(&view.roots, &mut ids);
+        assert_eq!(ids.len(), chain, "every record stays visible");
     }
 
     #[test]

@@ -12,7 +12,7 @@ use tokio::sync::mpsc;
 
 use crate::config::Settings;
 use crate::core::generate_image_core;
-use crate::history;
+use crate::history::{self, MAX_TREE_DEPTH};
 use crate::models::ImageGenerationRequest;
 
 const ROWS: usize = 11;
@@ -48,10 +48,6 @@ const HISTORY_FOOTER_HINT: &str =
 
 /// The first entry of the Edit tab's source picker (D-18).
 const PICK_FROM_HISTORY: &str = " Pick from history… ";
-
-/// A tree deeper than this is not descended into, so a corrupted sidecar
-/// cannot produce an unbounded recursion in the flattener.
-const MAX_HISTORY_DEPTH: usize = 64;
 
 /// The surface a tab index renders. Extracted from `draw`'s match so the tab
 /// table is exhaustive and provable in a unit test without a terminal: an
@@ -1930,7 +1926,9 @@ fn tab_footer_hints(tab: usize, editing: bool, picker_open: bool, field_editing:
 /// connector/indent/`✗ `/id8/prompt-field grammar as `render_history_text`
 /// because both call `history::history_row_text`.
 fn flatten_nodes(nodes: &[history::HistoryNode], depth: usize, out: &mut Vec<HistoryRow>) {
-    if depth >= MAX_HISTORY_DEPTH {
+    // The same shared cap `history::load_view` applies, so the flattener and
+    // the read path agree on how deep a hand-editable sidecar may go (CR-04).
+    if depth >= MAX_TREE_DEPTH {
         return;
     }
     let last = nodes.len().saturating_sub(1);
