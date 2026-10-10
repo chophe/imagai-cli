@@ -22,6 +22,10 @@ use serde::{Deserialize, Serialize};
 /// Filename of the lineage sidecar inside `output_dir` (D-08).
 pub const HISTORY_FILENAME: &str = ".imagai-history.json";
 
+/// The sibling temp file [`append_records`] writes before renaming it over the
+/// sidecar. It is never served and never listed.
+pub const HISTORY_TEMP_FILENAME: &str = ".imagai-history.json.tmp";
+
 /// A tree deeper than this is not descended into by [`load_view`] or the TUI
 /// flattener.
 ///
@@ -154,7 +158,7 @@ pub fn append_records(dir: &Path, new: &[HistoryRecord]) -> anyhow::Result<()> {
     let mut records = read_records(dir)?;
     records.extend_from_slice(new);
     let json = serde_json::to_string_pretty(&records)?;
-    let temp = dir.join(format!("{HISTORY_FILENAME}.tmp"));
+    let temp = dir.join(HISTORY_TEMP_FILENAME);
     std::fs::write(&temp, format!("{json}\n"))?;
     std::fs::rename(&temp, history_path(dir))?;
     Ok(())
@@ -1018,7 +1022,7 @@ mod tests {
         let records = read_records(dir.path()).expect("sidecar");
         assert_eq!(records.len(), 2, "the earlier record survives the append");
         assert!(
-            !dir.path().join(".imagai-history.json.tmp").exists(),
+            !dir.path().join(HISTORY_TEMP_FILENAME).exists(),
             "no temp file is left behind"
         );
     }
@@ -1033,8 +1037,7 @@ mod tests {
         let before = std::fs::read(history_path(dir.path())).expect("bytes before");
 
         // Occupying the temp path makes the write itself fail.
-        std::fs::create_dir(dir.path().join(".imagai-history.json.tmp"))
-            .expect("occupy the temp path");
+        std::fs::create_dir(dir.path().join(HISTORY_TEMP_FILENAME)).expect("occupy the temp path");
         let second = record("bbb22222", Some("aaa11111"), "b.png", "2026-10-09T11:00:00");
         assert!(
             append_records(dir.path(), std::slice::from_ref(&second)).is_err(),

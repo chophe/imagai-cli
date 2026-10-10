@@ -258,6 +258,64 @@ async fn serve_image_blocks_traversal() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn history_endpoint_does_not_disclose_the_absolute_path() {
+    // WR-03: the endpoint is reachable from any origin on a 0.0.0.0 bind, and
+    // it returned the server's absolute output_dir verbatim. The UI-SPEC's own
+    // example payload carries the relative name.
+    let mock = MockServer::start().await;
+    let out = TempDir::new().unwrap();
+    seed_history_store(
+        out.path(),
+        &[json!({
+            "id": "1a2b3c4d", "parent": null, "filename": "cat.png",
+            "prompt": "a cat", "model": "dall-e-3", "created": "2026-10-09T11:40:00"
+        })],
+    );
+    let app = web::router(test_settings(&mock, out.path()));
+
+    let (status, value) = get(app, "/api/history").await;
+    assert_eq!(status, StatusCode::OK);
+    let reported = value["output_dir"].as_str().expect("output_dir");
+    assert!(
+        !reported.contains('/'),
+        "a bare name, not an absolute path: {reported}"
+    );
+    assert_eq!(reported, out.path().file_name().unwrap().to_str().unwrap());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn serve_image_refuses_the_lineage_sidecar() {
+    // WR-03: `serve_image` reduced to the final component and served *any*
+    // file, including the sidecar, which `content_type_for` then labelled
+    // `application/octet-stream`. Every prompt, model and filename leaked to
+    // any origin.
+    let mock = MockServer::start().await;
+    let out = TempDir::new().unwrap();
+    let store = json!([{
+        "id": "1a2b3c4d", "parent": null, "filename": "cat.png",
+        "prompt": "SECRET-PROMPT", "model": "dall-e-3",
+        "created": "2026-10-09T11:40:00"
+    }])
+    .to_string();
+    std::fs::write(out.path().join(".imagai-history.json"), &store).expect("seed store");
+    let app = web::router(test_settings(&mock, out.path()));
+
+    for name in [".imagai-history.json", ".imagai-history.json.tmp"] {
+        let (status, body) = get(app.clone(), &format!("/api/images/{name}")).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{name} is not an image");
+        assert!(
+            !body.to_string().contains("SECRET-PROMPT"),
+            "{name} contents must not be served: {body}"
+        );
+    }
+    // The store itself is untouched on disk.
+    assert_eq!(
+        std::fs::read_to_string(out.path().join(".imagai-history.json")).unwrap(),
+        store
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn edit_endpoint_rejects_traversal_source() {
     let mock = MockServer::start().await;
     let out = TempDir::new().unwrap();

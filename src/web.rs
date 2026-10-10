@@ -465,7 +465,7 @@ async fn history(State(state): State<AppState>) -> Response {
     match crate::history::load_view(&state.settings.output_dir) {
         Ok(view) => Json(json!({
             "success": true,
-            "output_dir": view.output_dir,
+            "output_dir": output_dir_name(&state.settings.output_dir),
             "nodes": view.nodes,
             "missing": view.missing,
             "roots": view.roots,
@@ -475,6 +475,22 @@ async fn history(State(state): State<AppState>) -> Response {
         // is impossible. HTTP 200 matches every other handler in this file.
         Err(e) => Json(json!({ "success": false, "error": e.to_string() })).into_response(),
     }
+}
+
+/// The `output_dir` as a bare name rather than an absolute path (WR-03).
+///
+/// `GET /api/history` is reachable from any origin — the CORS layer allows
+/// `Any` and the server binds `0.0.0.0` by default — so returning the server's
+/// absolute filesystem path disclosed its layout to whoever asked. The
+/// UI-SPEC's own example payload carries the relative name
+/// (`"output_dir": "generated_images"`), and the SPA never reads the field.
+/// The CLI keeps rendering the configured path the operator typed: D-19 pins
+/// one *serializer*, not one value.
+fn output_dir_name(dir: &Path) -> String {
+    dir.file_name()
+        .and_then(|n| n.to_str())
+        .map(String::from)
+        .unwrap_or_default()
 }
 
 /// `POST /api/fork` — start an edit from a past image.
@@ -810,6 +826,12 @@ async fn serve_image(
     let Some(name) = Path::new(&filename).file_name().and_then(|n| n.to_str()) else {
         return json_not_found();
     };
+    // The lineage store is not an image (WR-03). `content_type_for` has no
+    // branch for it, so it was served as `application/octet-stream` with every
+    // record's prompts, models and filenames inside — to any origin.
+    if name == crate::history::HISTORY_FILENAME || name == crate::history::HISTORY_TEMP_FILENAME {
+        return json_not_found();
+    }
     let path = state.settings.output_dir.join(name);
     match std::fs::read(&path) {
         Ok(bytes) => {
