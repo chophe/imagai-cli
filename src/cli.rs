@@ -498,13 +498,36 @@ async fn cmd_edit(args: &EditArgs, settings: &Settings) -> anyhow::Result<()> {
 /// The single resolution step shared by `fork` and `edit`: it delegates to
 /// `history::resolve_fork_source`, so the id-prefix / filename / existing-file
 /// order (D-12) and the Copywriting Contract sentences have exactly one home.
+/// A resolved node's filename is reduced through `history::node_path` before it
+/// is joined under `output_dir` (T-02-01, T-02-05); a filename that carries a
+/// separator, an absolute path or no final component is refused rather than
+/// joined raw.
 fn resolve_from(from: Option<&str>, settings: &Settings) -> anyhow::Result<Option<String>> {
     let Some(from) = from else {
         return Ok(None);
     };
     let resolved = history::resolve_fork_source(&settings.output_dir, from)?;
     let path = match resolved {
-        history::ForkSource::Node { filename, .. } => settings.output_dir.join(filename),
+        history::ForkSource::Node { filename, .. } => {
+            // Reduce the record's filename to its final component before the
+            // join — the shared `history::node_path` reduction the web surface
+            // performs — and require the reduction to be a no-op: a record
+            // whose filename carries a separator, an absolute path or no final
+            // component is refused rather than silently resolved to a different
+            // file, and never joined raw (T-02-01, T-02-05). This is the last
+            // join before the read, so every `resolve_from` caller is covered
+            // by one guard. Recorded filenames are always plain names (D-23),
+            // so only a hand edit or a corrupted sidecar gets here.
+            let reduced = history::node_path(&settings.output_dir, &filename)
+                .filter(|p| p.file_name().and_then(|n| n.to_str()) == Some(filename.as_str()));
+            let Some(path) = reduced else {
+                anyhow::bail!(
+                    "'{filename}' is not a plain filename inside {}",
+                    settings.output_dir.to_string_lossy()
+                );
+            };
+            path
+        }
         history::ForkSource::File { path, .. } => path,
     };
     Ok(Some(path.to_string_lossy().to_string()))

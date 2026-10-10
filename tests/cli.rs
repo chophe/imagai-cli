@@ -1176,6 +1176,126 @@ async fn fork_rejects_deleted_file_of_recorded_node() {
         .stderr(predicate::str::contains("which is no longer in"));
 }
 
+/// A sidecar record whose `filename` carries a `../` component must never be
+/// joined raw under `output_dir` (T-02-01, T-02-05): the CLI reduces it through
+/// `history::node_path` and refuses a record that is not a plain filename — with
+/// no request reaching the provider and nothing recorded.
+#[tokio::test(flavor = "multi_thread")]
+async fn fork_rejects_a_record_filename_that_escapes_output_dir() {
+    let mock = MockServer::start().await;
+    let parent = TempDir::new().unwrap();
+    let out = parent.path().join("output_dir");
+    std::fs::create_dir(&out).unwrap();
+    // Two files with the same final component: the traversal target one level
+    // above `output_dir`, and the in-dir file whose presence lets the record
+    // resolve at all. Before the guard, the unreduced join read the first.
+    std::fs::write(
+        parent.path().join("escape-target.png"),
+        b"OUTSIDE-OUTPUT_DIR",
+    )
+    .expect("seed traversal target");
+    seed_source_png(&out, "escape-target.png");
+    seed_history_store(
+        &out,
+        &[serde_json::json!({
+            "id": "1a2b3c4d", "parent": null, "filename": "../escape-target.png",
+            "prompt": "a cat", "model": "dall-e-3", "created": "2026-10-09T11:40:00"
+        })],
+    );
+
+    cmd_edit(&mock, &out)
+        .args(["fork", "--from", "1a2b3c4d", "-p", "x"])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "'../escape-target.png' is not a plain filename inside",
+        ));
+
+    assert!(
+        mock.requests_for("/v1/images/edits").is_empty(),
+        "no edit request reaches the provider: {:?}",
+        mock.requests_for("/v1/images/edits")
+    );
+    assert_eq!(
+        read_history_record_ids(&out),
+        vec!["1a2b3c4d".to_string()],
+        "the refused fork records nothing"
+    );
+    assert!(
+        parent.path().join("escape-target.png").is_file(),
+        "the traversal target is untouched"
+    );
+}
+
+/// The same guard on the `edit --from` path, for the separator and absolute-path
+/// shapes a hand-edited sidecar can carry. Each is refused, none reaches the
+/// provider. `(record filename, file that must exist inside output_dir for the
+/// node to resolve at all)`.
+#[tokio::test(flavor = "multi_thread")]
+async fn edit_from_refuses_a_separator_carrying_record_filename() {
+    for (filename, present) in [
+        ("../escape-target.png", "escape-target.png"),
+        ("sub/dir/cat.png", "cat.png"),
+        ("/etc/passwd", "passwd"),
+    ] {
+        let mock = MockServer::start().await;
+        let parent = TempDir::new().unwrap();
+        let out = parent.path().join("output_dir");
+        std::fs::create_dir(&out).unwrap();
+        seed_source_png(&out, present);
+        seed_history_store(
+            &out,
+            &[serde_json::json!({
+                "id": "1a2b3c4d", "parent": null, "filename": filename,
+                "prompt": "a cat", "model": "dall-e-3", "created": "2026-10-09T11:40:00"
+            })],
+        );
+
+        cmd_edit(&mock, &out)
+            .args(["edit", "--from", "1a2b3c4d", "-p", "x"])
+            .assert()
+            .failure()
+            .code(1)
+            .stderr(predicate::str::contains("is not a plain filename inside"));
+
+        assert!(
+            mock.requests_for("/v1/images/edits").is_empty(),
+            "{filename:?}: no edit request reaches the provider"
+        );
+    }
+}
+
+/// A record whose filename has no final component at all (`..`, ``, `.`) has no
+/// path inside `output_dir` to fork from, so resolution refuses the node before
+/// any read — and nothing reaches the provider.
+#[tokio::test(flavor = "multi_thread")]
+async fn fork_refuses_a_record_filename_with_no_final_component() {
+    for filename in ["..", "", "."] {
+        let mock = MockServer::start().await;
+        let out = TempDir::new().unwrap();
+        seed_history_store(
+            out.path(),
+            &[serde_json::json!({
+                "id": "1a2b3c4d", "parent": null, "filename": filename,
+                "prompt": "a cat", "model": "dall-e-3", "created": "2026-10-09T11:40:00"
+            })],
+        );
+
+        cmd_edit(&mock, out.path())
+            .args(["fork", "--from", "1a2b3c4d", "-p", "x"])
+            .assert()
+            .failure()
+            .code(1)
+            .stderr(predicate::str::contains("no longer in"));
+
+        assert!(
+            mock.requests_for("/v1/images/edits").is_empty(),
+            "{filename:?}: no edit request reaches the provider"
+        );
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn fork_rejects_more_than_sixteen_images() {
     let mock = MockServer::start().await;
