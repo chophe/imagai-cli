@@ -106,6 +106,32 @@ fn record_for_filename<'a>(
     records.iter().rev().find(|r| r.filename == filename)
 }
 
+/// True when `filename` is already claimed inside `dir`.
+///
+/// G-1: the `source_image` arm of `generate_image_core` derived its output name
+/// deterministically (`{stem}-edit.<ext>`), so a second fork from the same
+/// source overwrote the first fork's image while both records named one file —
+/// and D-20's read-time `missing` check could not see the loss, because a file
+/// with that name still existed. The probe covers both halves of the claim:
+///
+/// * a file on disk is a real overwrite hazard;
+/// * a sidecar record naming it matters because D-20 keeps a node whose file
+///   was deleted externally, so that name is not free again — a disk-only
+///   probe would let the next fork land on a name a kept-but-missing node
+///   owns, which is the same two-nodes-one-file condition.
+///
+/// An unreadable sidecar (CR-02) reads as taken: disambiguating is always the
+/// safe direction, never overwriting.
+pub fn filename_taken(dir: &Path, filename: &str) -> bool {
+    if dir.join(filename).is_file() {
+        return true;
+    }
+    match read_records(dir) {
+        Ok(records) => record_for_filename(&records, filename).is_some(),
+        Err(_) => true,
+    }
+}
+
 /// A resolved fork source, in the order `resolve_fork_source` tries (D-12).
 #[derive(Debug)]
 pub enum ForkSource {
@@ -1194,5 +1220,54 @@ mod tests {
             assert!(!all.contains(&candidate), "no collision with existing ids");
             all.push(candidate);
         }
+    }
+
+    #[test]
+    fn filename_taken_is_false_for_a_name_nothing_claims() {
+        let dir = TempDir::new().unwrap();
+        assert!(
+            !filename_taken(dir.path(), "cat-edit.png"),
+            "a free name in an empty dir is free"
+        );
+    }
+
+    #[test]
+    fn filename_taken_sees_a_file_the_store_does_not_know() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("cat-edit.png"), b"x").expect("file on disk");
+        assert!(
+            filename_taken(dir.path(), "cat-edit.png"),
+            "a real overwrite hazard is taken even with an empty store"
+        );
+    }
+
+    #[test]
+    fn filename_taken_honours_a_record_whose_file_is_gone() {
+        // G-1: the exact shape `tests/cli.rs#fork_keeps_both_branches_visible`
+        // seeds — D-20 keeps the node after its file is deleted externally, so
+        // the name is not free again.
+        let dir = TempDir::new().unwrap();
+        write_store(
+            dir.path(),
+            &[record(
+                "2b3c4d5e",
+                Some("1a2b3c4d"),
+                "cat-edit.png",
+                "2026-10-09T11:41:00",
+            )],
+        );
+        assert!(
+            filename_taken(dir.path(), "cat-edit.png"),
+            "a kept-but-missing node still owns its filename"
+        );
+    }
+
+    #[test]
+    fn filename_taken_treats_an_unreadable_sidecar_as_taken() {
+        // CR-02: an unreadable store reads as taken, so a corrupt sidecar can
+        // never be the reason a name is reused.
+        let dir = TempDir::new().unwrap();
+        std::fs::write(history_path(dir.path()), b"\xff\xfe\x00{\"").expect("corrupt sidecar");
+        assert!(filename_taken(dir.path(), "cat-edit.png"));
     }
 }

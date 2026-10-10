@@ -86,7 +86,25 @@ pub async fn generate_image_core(
             if request.n > 1 {
                 suffix_numbered(&base, i, request.n)
             } else {
-                base
+                // G-1: a second fork from the same source used to land on the
+                // same deterministic `{stem}-edit.<ext>` name and overwrite the
+                // first fork's image, leaving two records naming one file —
+                // invisible to D-20's read-time check, because a file with that
+                // name still existed. The same failure CR-06 removed from the
+                // adjacent default-filename branch. Probe the store and bump
+                // through the shared `suffix_numbered` `_N` scheme instead; the
+                // canonical name is kept when nothing claims it.
+                let mut candidate = base.clone();
+                for bump in 0..MAX_NAME_BUMPS {
+                    if !crate::history::filename_taken(&settings.output_dir, &candidate) {
+                        break;
+                    }
+                    // `total: 2` is the smallest value that activates the `_N`
+                    // scheme (`total <= 1` returns the input unchanged), so the
+                    // bumped names are exactly the ones `n > 1` produces.
+                    candidate = suffix_numbered(&base, bump, 2);
+                }
+                candidate
             }
         } else if request.auto_filename {
             let f = generate_filename_from_prompt_llm(
@@ -186,6 +204,11 @@ pub async fn generate_image_core(
 
     final_responses
 }
+
+/// Upper bound on the G-1 collision probe's `_N` bumps. An unreadable sidecar
+/// reads as taken, so without a bound the probe could spin forever; past the
+/// bound the last candidate is used and the save proceeds as before.
+const MAX_NAME_BUMPS: usize = 1000;
 
 /// Add a `_<i+1>` suffix before the extension when generating multiple images.
 fn suffix_numbered(filename: &str, index: usize, total: u32) -> String {
