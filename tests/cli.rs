@@ -1047,14 +1047,92 @@ async fn fork_keeps_both_branches_visible() {
         stdout.contains("cat-edit.png"),
         "the original child is still listed: {stdout}"
     );
+    // The permissive `||` alternative is dropped on purpose: the seeded store
+    // already claims `cat-edit.png` through node `2b3c4d5e`, so the record half
+    // of the probe forces the fork to bump and the name is deterministic —
+    // `cat-edit_1.png`, the `_1` the shared `suffix_numbered` scheme produces.
+    // A filename collision must never pass here silently again (G-1).
     assert!(
-        stdout.contains("night") || stdout.contains("cat-edit-1.png"),
+        stdout.contains("cat-edit_1.png"),
         "the fork's child is listed: {stdout}"
     );
     assert_eq!(
         stdout.matches("1a2b3c4d").count(),
         1,
         "the root appears exactly once: {stdout}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn two_forks_from_one_source_keep_both_images() {
+    // G-1: a second fork from the same source used to derive the first fork's
+    // `{stem}-edit.<ext>` name and overwrite its image, leaving two records
+    // naming one file while the tree still looked perfectly healthy.
+    let mock = MockServer::start().await;
+    let out = TempDir::new().unwrap();
+    seed_root_with_file(out.path(), "cat.png");
+
+    cmd_edit(&mock, out.path())
+        .args(["fork", "--from", "1a2b3c4d", "-p", "make it night"])
+        .assert()
+        .success();
+    cmd_edit(&mock, out.path())
+        .args(["fork", "--from", "1a2b3c4d", "-p", "make it forest"])
+        .assert()
+        .success();
+
+    // Both forks survive as distinct files: the second bumped because the disk
+    // half of the probe claims the canonical name — the overwrite G-1 committed.
+    assert!(
+        out.path().join("cat-edit.png").is_file(),
+        "the first fork's image survives"
+    );
+    assert!(
+        out.path().join("cat-edit_1.png").is_file(),
+        "the second fork bumps to a distinct name"
+    );
+
+    // The store stays truthful: three records, three distinct filenames, both
+    // children parented to the root — the condition G-1 created, inverted.
+    let text = std::fs::read_to_string(out.path().join(".imagai-history.json")).expect("sidecar");
+    let value: serde_json::Value = serde_json::from_str(&text).expect("parses");
+    let records = value.as_array().expect("array");
+    assert_eq!(records.len(), 3, "root plus two fork children");
+    let filenames: Vec<&str> = records
+        .iter()
+        .map(|r| r["filename"].as_str().expect("filename"))
+        .collect();
+    assert_eq!(
+        filenames,
+        vec!["cat.png", "cat-edit.png", "cat-edit_1.png"],
+        "three distinct filenames"
+    );
+    assert_eq!(records[1]["prompt"], "make it night");
+    assert_eq!(records[2]["prompt"], "make it forest");
+    assert_eq!(records[1]["parent"], records[0]["id"], "child of the root");
+    assert_eq!(records[2]["parent"], records[0]["id"], "child of the root");
+
+    // The tree lists both children, the root exactly once, and no missing-file
+    // marker: D-20's marker would return if either fork had silently replaced
+    // the other's file.
+    let assert = cmd(&mock, out.path()).arg("history").assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("utf-8 stdout");
+    assert!(
+        stdout.contains("cat-edit.png"),
+        "the first fork is listed: {stdout}"
+    );
+    assert!(
+        stdout.contains("cat-edit_1.png"),
+        "the second fork is listed: {stdout}"
+    );
+    assert_eq!(
+        stdout.matches("1a2b3c4d").count(),
+        1,
+        "the root appears exactly once: {stdout}"
+    );
+    assert!(
+        !stdout.contains("✗") && !stdout.contains("no longer in"),
+        "both images are really on disk: {stdout}"
     );
 }
 
