@@ -852,6 +852,56 @@ async fn fal_empty_images_list_reports_no_images() {
 // ---- fal model discovery
 
 #[tokio::test(flavor = "multi_thread")]
+async fn fal_engine_with_no_model_fails_before_any_request() {
+    // WR-02: the fal family's model id is its URL path, so the shared
+    // `dall-e-3` default would silently POST to a nonsense endpoint and answer
+    // with a bald, cause-less 404. The engine is named, MODEL is named, and the
+    // reachable mock records nothing — the sentence shape every other adapter
+    // failure uses, before any socket opens (D-05).
+    let mock = MockServer::start().await;
+    let out = TempDir::new().unwrap();
+    let out_path = out.path().to_path_buf();
+
+    let settings = Settings {
+        output_dir: out_path,
+        default_engine: Some("nomodel".to_string()),
+        engines: HashMap::from([(
+            "nomodel".to_string(),
+            EngineConfig {
+                api_key: "test".to_string(),
+                // A live, reachable host: the failure must be the config, not the
+                // network.
+                base_url: Some(mock.base_url()),
+                model: None,
+                format: Some("fal".to_string()),
+            },
+        )]),
+    };
+
+    let request = ImageGenerationRequest {
+        prompt: "a fal cat".to_string(),
+        engine: "nomodel".to_string(),
+        ..Default::default()
+    };
+
+    let results = generate_image_core(&request, &settings).await;
+    assert_eq!(results.len(), 1);
+    let err = results[0].error.as_deref().expect("error message");
+    assert!(err.contains("nomodel"), "names the engine: {err}");
+    assert!(err.contains("MODEL"), "names the missing field: {err}");
+    assert!(
+        err.contains("IMAGAI__ENGINES__<NAME>__MODEL"),
+        "names the variable to set: {err}"
+    );
+    assert!(results[0].saved_path.is_none(), "no phantom save");
+    assert!(
+        mock.requests().is_empty(),
+        "no request is spent on a missing model: {:?}",
+        mock.requests()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn fal_engine_discovery_is_refused_even_with_a_reachable_host() {
     // BLOCKER-2, end to end: discovery is gated on the format, not on the
     // address, so a fal engine pointed at a live listing-shaped endpoint still

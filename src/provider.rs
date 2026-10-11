@@ -258,6 +258,21 @@ pub async fn generate_images(
         }
     };
     if matches!(format, ProviderFormat::Fal) {
+        // The model id *is* the URL path for this family, so it must be explicit:
+        // the shared `dall-e-3` default above would silently aim the request at a
+        // nonsense endpoint and answer with a bare, cause-less 404 (WR-02). D-05's
+        // rule — a config mistake must not spend a request — applies here exactly
+        // as it does to an unknown FORMAT.
+        let Some(model) = config.model.clone() else {
+            return vec![ImageGenerationResponse {
+                error: Some(format!(
+                    "Engine '{}' has no MODEL set: the 'fal' format derives its endpoint from the model id, \
+                     so set IMAGAI__ENGINES__<NAME>__MODEL (for example 'fal-ai/flux/schnell').",
+                    request.engine
+                )),
+                ..Default::default()
+            }];
+        };
         return match fal_generate(request, config, &model).await {
             Ok(r) => r,
             Err(e) => vec![ImageGenerationResponse {
