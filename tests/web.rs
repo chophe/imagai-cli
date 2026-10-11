@@ -1092,3 +1092,35 @@ async fn edit_form_is_served_with_source_and_ref_pickers() {
         assert!(html.contains(needle), "served HTML contains {needle}");
     }
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn fal_engine_refuses_a_size_the_enum_has_no_entry_for() {
+    // WR-04's secondary point, through a real surface: the SPA's size dropdown
+    // offers 1792x1024 and 512x512, which the fal enum has no exact entry for.
+    // The Rust hard-fails rather than substituting a 4:3 geometry, and the web
+    // surface — which shares the pipeline — reports exactly that, before any
+    // request is spent.
+    let mock = MockServer::start().await;
+    mock.set_fal_mode(common::FalMode::Url { count: 1 });
+    let out = TempDir::new().unwrap();
+    let app = web::router(fal_engine_settings(&mock, out.path()));
+
+    let payload = json!({"prompt": "a web fal cat", "engine": "fal", "size": "1792x1024", "n": 1});
+    let (status, value) = post_json(app, "/api/generate", &payload).await;
+    assert_eq!(status, StatusCode::OK);
+    let results = value["results"].as_array().expect("results array");
+    assert_eq!(results.len(), 1);
+    let err = results[0]["error"].as_str().expect("the error envelope");
+    assert!(err.contains("fal"), "names the engine: {err}");
+    assert!(err.contains("1792x1024"), "names the rejected size: {err}");
+    assert!(err.contains("1024x1024"), "names the size that maps: {err}");
+    assert!(
+        results[0]["saved_path"].is_null(),
+        "no phantom save: {results:?}"
+    );
+    assert!(
+        mock.requests().is_empty(),
+        "no request is spent on an unsupported size: {:?}",
+        mock.requests()
+    );
+}

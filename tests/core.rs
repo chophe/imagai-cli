@@ -1095,3 +1095,37 @@ async fn fal_non_utf8_error_body_is_a_named_failure() {
         "the request was made and answered; only the body defeated us"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn fal_engine_refuses_a_non_square_size_before_any_request() {
+    // WR-04's secondary point: the size bail was only ever proven at the builder
+    // level. Through the shared pipeline it must reach the operator unchanged —
+    // naming the engine, the rejected size and the one size that maps — with no
+    // request spent and no differently-shaped image.
+    let mock = MockServer::start().await;
+    let out = TempDir::new().unwrap();
+    let settings = fal_settings(&mock, out.path());
+
+    let request = ImageGenerationRequest {
+        prompt: "a fal cat".to_string(),
+        engine: "fal".to_string(),
+        size: "1024x1792".to_string(),
+        ..Default::default()
+    };
+
+    let results = generate_image_core(&request, &settings).await;
+    assert_eq!(results.len(), 1);
+    let err = results[0].error.as_deref().expect("error message");
+    assert!(err.contains("Engine 'fal'"), "names the engine: {err}");
+    assert!(err.contains("1024x1792"), "names the rejected size: {err}");
+    assert!(
+        err.contains("1024x1024"),
+        "names the size that does map: {err}"
+    );
+    assert!(results[0].saved_path.is_none(), "no phantom save");
+    assert!(
+        mock.requests().is_empty(),
+        "no request is spent on an unsupported size: {:?}",
+        mock.requests()
+    );
+}

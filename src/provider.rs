@@ -608,20 +608,26 @@ fn build_fal_images_body(request: &ImageGenerationRequest) -> anyhow::Result<ser
     Ok(body)
 }
 
-/// Map one of the three standard OpenAI sizes onto fal's `image_size` enum.
+/// Map an OpenAI-standard size onto fal's `image_size` enum.
 ///
-/// Hard failure rather than truncation: silently dropping an unmapped size would
-/// hand the provider its own default (`landscape_4_3`) and give the user a
-/// landscape image they never asked for. A size the enum lacks is passed through
-/// `extra_params` instead (D-31).
+/// One entry, and it is an exact geometric match: `1024x1024` is square and so is
+/// `square_hd`. Hard failure for everything else, in the spirit of the comment
+/// that used to sit two lines above this function — silently dropping an unmapped
+/// size would hand the provider its own default (`landscape_4_3`) and give the
+/// user a landscape image they never asked for.
+///
+/// The former three-entry table mapped `1024x1792` onto `portrait_4_3` and
+/// `1792x1024` onto `landscape_4_3`, which is the same defect with a friendlier
+/// name: those are 4:3 geometries, not the 9:16 and 16:9 the requests ask for, so
+/// the substitution was silent and undocumented (WR-04). A size the enum lacks is
+/// passed through `extra_params` instead (D-31) — including a future `16_9`
+/// entry, if fal adds one.
 fn fal_image_size(engine: &str, size: &str) -> anyhow::Result<&'static str> {
     match size {
         "1024x1024" => Ok("square_hd"),
-        "1024x1792" => Ok("portrait_4_3"),
-        "1792x1024" => Ok("landscape_4_3"),
         _ => anyhow::bail!(
             "Engine '{engine}' cannot request the size '{size}' from the 'fal' format; \
-             supported sizes: 1024x1024, 1024x1792, 1792x1024. \
+             the only size that maps exactly is 1024x1024 (fal's `square_hd`). \
              Pass provider-specific fields through extra_params."
         ),
     }
@@ -1124,6 +1130,9 @@ mod tests {
 
     #[test]
     fn fal_body_bails_on_an_unmapped_size() {
+        // WR-04: the only size that maps exactly is the square one; the former
+        // 4:3 substitution for 1024x1792/1792x1024 silently changed the geometry
+        // the user asked for.
         let req = ImageGenerationRequest {
             size: "512x512".to_string(),
             ..request_with_extra(HashMap::new())
@@ -1131,9 +1140,31 @@ mod tests {
         let err = build_fal_images_body(&req).unwrap_err().to_string();
         assert!(err.contains("mock"), "names the engine: {err}");
         assert!(err.contains("512x512"), "names the rejected size: {err}");
-        for supported in ["1024x1024", "1024x1792", "1792x1024"] {
-            assert!(err.contains(supported), "lists {supported}: {err}");
+        assert!(
+            err.contains("1024x1024"),
+            "lists the one mapped size: {err}"
+        );
+    }
+
+    #[test]
+    fn fal_body_bails_on_every_size_that_is_not_an_exact_match() {
+        // The two sizes the old table silently re-geometried, and the SPA's other
+        // options: all fail fast instead of arriving as 4:3.
+        for size in ["1024x1792", "1792x1024", "768x768"] {
+            let req = ImageGenerationRequest {
+                size: size.to_string(),
+                ..request_with_extra(HashMap::new())
+            };
+            let err = build_fal_images_body(&req).unwrap_err().to_string();
+            assert!(err.contains(size), "names the rejected size: {err}");
         }
+        // The square size still maps, and to the same enum value as before.
+        let req = ImageGenerationRequest {
+            size: "1024x1024".to_string(),
+            ..request_with_extra(HashMap::new())
+        };
+        let body = build_fal_images_body(&req).expect("1024x1024 maps");
+        assert_eq!(body["image_size"], "square_hd");
     }
 
     #[test]
