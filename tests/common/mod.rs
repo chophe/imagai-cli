@@ -196,7 +196,14 @@ async fn dispatch(
             .to_string(),
     ));
 
-    if path.contains("fal-ai") {
+    if path.contains("/fal-ai/") {
+        // IN-04: routed on the path *segment* the fal adapter builds
+        // (`{base}/{model_id}`), not on a bare substring — a future
+        // OpenAI-compatible mock engine whose id merely mentions `fal-ai` would
+        // otherwise be served the fal response shape whatever it declared. Keyed
+        // off the model id the fal tests use, which is what makes the coupling
+        // explicit rather than accidental: an engine reaches this arm only by
+        // asking for that exact model path.
         return fal_logic(state, &uri).await;
     }
     if path.contains("images/edits") {
