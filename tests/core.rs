@@ -534,6 +534,8 @@ fn list_png_files(dir: &std::path::Path) -> Vec<String> {
     files
 }
 
+// ---- fal engine
+
 #[tokio::test(flavor = "multi_thread")]
 async fn edit_against_fal_format_fails_before_any_request() {
     // D-05/D-26/D-30: the capability gate must fire before a socket opens. The
