@@ -425,6 +425,104 @@ async fn default_filename_with_multiple_images_does_not_collide() {
     assert_ne!(records[0]["filename"], records[1]["filename"]);
 }
 
+/// A declared-`openai` engine pointed at an `openrouter.ai` path segment.
+fn declared_openai_gem_settings(mock: &MockServer, out_path: &std::path::Path) -> Settings {
+    let openrouter_url = format!("http://{}/openrouter.ai/v1", mock.addr);
+    Settings {
+        output_dir: out_path.to_path_buf(),
+        default_engine: Some("gem".to_string()),
+        engines: HashMap::from([(
+            "gem".to_string(),
+            EngineConfig {
+                api_key: "test".to_string(),
+                base_url: Some(openrouter_url),
+                model: Some("gemini-2.0-flash-image".to_string()),
+                format: Some("openai".to_string()),
+            },
+        )]),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn declared_openai_format_keeps_the_sniffed_transports() {
+    // D-29's complement to D-28: a declaration must not change a within-family
+    // transport, exactly as a missing declaration must not. Same engine, same
+    // mock mode as `openrouter_chat_image_model_saves_png`, plus the
+    // declaration.
+    let mock = MockServer::start().await;
+    mock.set_chat_mode(ChatMode::Image);
+    let out = TempDir::new().unwrap();
+    let settings = declared_openai_gem_settings(&mock, out.path());
+
+    let request = ImageGenerationRequest {
+        prompt: "draw something".to_string(),
+        engine: "gem".to_string(),
+        ..Default::default()
+    };
+
+    let results = generate_image_core(&request, &settings).await;
+    assert_eq!(results.len(), 1);
+    assert!(results[0].error.is_none(), "{:?}", results[0].error);
+    assert!(results[0].saved_path.is_some());
+
+    assert_eq!(mock.requests_for("/v1/chat/completions").len(), 1);
+    assert_eq!(mock.requests_for("/v1/images/generations").len(), 0);
+    // And it is not the fal adapter's endpoint family either.
+    assert_eq!(mock.requests_for("gemini").len(), 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn declared_openai_edit_engine_still_saves_with_lineage() {
+    // A `gpt-image-1` engine declared `openai` still takes the multipart edits
+    // path and still writes the PNG lineage (criterion 3, D-26, D-29).
+    let mock = MockServer::start().await;
+    let out = TempDir::new().unwrap();
+    let out_path = out.path().to_path_buf();
+    let source = out_path.join("source.png");
+    use base64::Engine;
+    std::fs::write(
+        &source,
+        base64::engine::general_purpose::STANDARD
+            .decode(common::PIXEL_PNG_B64)
+            .expect("decode"),
+    )
+    .expect("seed png");
+
+    let mut settings = base_settings(out.path());
+    settings.engines.insert(
+        "mock".to_string(),
+        EngineConfig {
+            api_key: "test".to_string(),
+            base_url: Some(mock.base_url()),
+            model: Some("gpt-image-1".to_string()),
+            format: Some("openai".to_string()),
+        },
+    );
+
+    let request = ImageGenerationRequest {
+        prompt: "make it sunset".to_string(),
+        engine: "mock".to_string(),
+        source_image: Some(source.to_string_lossy().to_string()),
+        ..Default::default()
+    };
+
+    let results = generate_image_core(&request, &settings).await;
+    assert_eq!(results.len(), 1);
+    assert!(results[0].error.is_none(), "{:?}", results[0].error);
+    let saved = results[0].saved_path.as_ref().expect("saved path");
+    assert!(saved.ends_with("-edit.png"), "D-06 naming: {saved}");
+
+    // D-07: prompt, model and source filename only — never the path.
+    let bytes = std::fs::read(saved).expect("read saved png");
+    let has = |needle: &[u8]| bytes.windows(needle.len()).any(|w| w == needle);
+    assert!(has(b"tEXt"), "tEXt chunks present");
+    assert!(has(b"make it sunset"), "prompt recorded");
+    assert!(has(b"gpt-image-1"), "model recorded");
+    assert!(has(b"source.png"), "source filename recorded");
+    assert_eq!(mock.requests_for("/v1/images/edits").len(), 1);
+    assert_eq!(mock.requests_for("/v1/images/generations").len(), 0);
+}
+
 fn list_png_files(dir: &std::path::Path) -> Vec<String> {
     let mut files: Vec<String> = std::fs::read_dir(dir)
         .expect("read output dir")

@@ -148,6 +148,179 @@ async fn list_engines_shows_a_broken_format_declaration_verbatim() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn openai_default_engine_body_is_unchanged() {
+    // Success criterion 3 / D-28's executable form. The expected key set is the
+    // pre-phase shape recorded when this phase was planned, so an accidental fal
+    // key leaking into the OpenAI-compatible body fails here rather than
+    // reaching a provider. A future intentional change must edit this test
+    // deliberately.
+    let mock = MockServer::start().await;
+    let out = TempDir::new().unwrap();
+
+    cmd(&mock, out.path())
+        .args(["generate", "-p", "a red cat"])
+        .assert()
+        .success();
+
+    let bodies = mock.requests_for("/v1/images/generations");
+    assert_eq!(bodies.len(), 1, "exactly one request");
+    let body = &bodies[0];
+    let obj = body.as_object().expect("body is an object");
+    let mut keys: Vec<&str> = obj.keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        vec![
+            "model",
+            "n",
+            "prompt",
+            "quality",
+            "response_format",
+            "size",
+            "style"
+        ],
+        "the pre-phase dall-e-3 key set, in full"
+    );
+    for fal_key in [
+        "num_images",
+        "image_size",
+        "output_format",
+        "images",
+        "data",
+    ] {
+        assert!(
+            body.get(fal_key).is_none(),
+            "no fal key '{fal_key}' may appear: {body}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stability_default_engine_body_is_unchanged() {
+    // The Stability key set is the regression-sensitive part: `n` and
+    // `response_format` are dropped and the three extras plus the injected
+    // default `mode` are what remain. `generate_stability_extra_params_sent`
+    // asserts the extras survive; this asserts the whole key set.
+    let mock = MockServer::start().await;
+    let out = TempDir::new().unwrap();
+
+    let mut c = cmd(&mock, out.path());
+    c.env(
+        "IMAGAI__ENGINES__MOCK__MODEL",
+        "stability.stable-image-core-v1:1",
+    )
+    .args([
+        "generate",
+        "-p",
+        "portrait",
+        "--negative-prompt",
+        "blurry, text",
+        "--seed",
+        "42",
+        "--aspect-ratio",
+        "16:9",
+    ])
+    .assert()
+    .success();
+
+    let bodies = mock.requests_for("/v1/images/generations");
+    assert_eq!(bodies.len(), 1, "exactly one request");
+    let body = &bodies[0];
+    let obj = body.as_object().expect("body is an object");
+    let mut keys: Vec<&str> = obj.keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        vec![
+            "aspect_ratio",
+            "mode",
+            "model",
+            "negative_prompt",
+            "prompt",
+            "seed"
+        ],
+        "the pre-phase Stability key set, in full"
+    );
+    assert!(body.get("n").is_none(), "n is dropped for Stability");
+    assert!(
+        body.get("response_format").is_none(),
+        "response_format is dropped for Stability"
+    );
+    assert!(
+        body.get("size").is_none(),
+        "size is dropped when aspect_ratio is"
+    );
+    assert_eq!(body["mode"], "text-to-image", "default mode injected");
+}
+
+// ---------------------------------------------------------------- fal engine
+
+#[tokio::test(flavor = "multi_thread")]
+async fn fal_engine_generates_from_the_cli() {
+    // Success criterion 4, CLI surface: `--engine` selects the declared fal
+    // engine and the adapter builds its own body. The mock's request count is
+    // the proof — "one fal request, zero OpenAI-compatible requests" is
+    // observed, not inferred.
+    let mock = MockServer::start().await;
+    mock.set_fal_mode(common::FalMode::Url { count: 1 });
+    let out = TempDir::new().unwrap();
+
+    cmd(&mock, out.path())
+        .env("IMAGAI__ENGINES__FAL__API_KEY", "test-key")
+        .env("IMAGAI__ENGINES__FAL__BASE_URL", mock.base_url())
+        .env("IMAGAI__ENGINES__FAL__MODEL", "fal-ai/flux/schnell")
+        .env("IMAGAI__ENGINES__FAL__FORMAT", "fal")
+        .args(["generate", "-p", "a fal cat", "--engine", "fal"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("generated successfully"))
+        .stdout(predicate::str::contains("Saved to:"));
+
+    assert_eq!(list_pngs(out.path()).len(), 1, "one saved PNG");
+    assert_eq!(
+        mock.requests_for("fal-ai/flux/schnell").len(),
+        1,
+        "one fal request"
+    );
+    assert_eq!(mock.requests_for("/v1/images/generations").len(), 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn unknown_format_fails_the_cli_run() {
+    // D-24/D-05's fail-fast reaching the operator through the real binary: an
+    // unrecognised FORMAT must not spend a request on a guess. The operator sees
+    // the engine, the rejected value and both supported names on stderr, and the
+    // load-time `[warning]` says the same thing earlier.
+    //
+    // DEVIATION from 03-05 Task 2: the plan also asks for a non-zero exit. It is
+    // not asserted here because `cmd_generate` returns `Ok(())` for per-item
+    // errors today, so the process exits 0 — that is Phase 4's success criterion
+    // ("Non-zero exit on failure", ROADMAP § Phase 4) and 03-05's own acceptance
+    // criteria forbid touching `src/`. Recorded as an open gap, not silently
+    // satisfied; see 03-05-SUMMARY.md.
+    let mock = MockServer::start().await;
+    let out = TempDir::new().unwrap();
+
+    cmd(&mock, out.path())
+        .env("IMAGAI__ENGINES__BAD__API_KEY", "test-key")
+        .env("IMAGAI__ENGINES__BAD__BASE_URL", mock.base_url())
+        .env("IMAGAI__ENGINES__BAD__MODEL", "gpt-image-1")
+        .env("IMAGAI__ENGINES__BAD__FORMAT", "bogus")
+        .args(["generate", "-p", "x", "--engine", "bad"])
+        .assert()
+        .stderr(predicate::str::contains("bad"))
+        .stderr(predicate::str::contains("bogus"))
+        .stderr(predicate::str::contains("openai"))
+        .stderr(predicate::str::contains("fal"));
+
+    assert!(
+        mock.requests().is_empty(),
+        "no request is spent on an unknown format: {:?}",
+        mock.requests()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn list_engines_all_fetches_models() {
     let mock = MockServer::start().await;
     let out = TempDir::new().unwrap();

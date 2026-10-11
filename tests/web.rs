@@ -920,6 +920,85 @@ async fn history_form_is_served_with_engine_format_labels() {
     }
 }
 
+// ---------------------------------------------------------------- fal engine
+
+/// A settings literal carrying a declared `fal` engine pointed at the mock.
+fn fal_engine_settings(mock: &MockServer, out_dir: &Path) -> Settings {
+    let mut settings = test_settings(mock, out_dir);
+    settings.engines.insert(
+        "fal".to_string(),
+        EngineConfig {
+            api_key: "test-key".to_string(),
+            base_url: Some(mock.base_url()),
+            model: Some("fal-ai/flux/schnell".to_string()),
+            format: Some("fal".to_string()),
+        },
+    );
+    settings
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn fal_engine_generates_through_the_web_api() {
+    // Success criterion 4, web surface. Because the handler routes through the
+    // same `generate_image_core` the CLI and TUI use, this is simultaneously the
+    // proof that the web surface gained the fal engine with no web-specific
+    // routing code (D-33).
+    let mock = MockServer::start().await;
+    mock.set_fal_mode(common::FalMode::Url { count: 1 });
+    let out = TempDir::new().unwrap();
+    let app = web::router(fal_engine_settings(&mock, out.path()));
+
+    let payload = json!({"prompt": "a web fal cat", "engine": "fal", "n": 1});
+    let (status, value) = post_json(app, "/api/generate", &payload).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(value["success"], true, "{value}");
+    let results = value["results"].as_array().expect("results array");
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0]["success"], true, "{results:?}");
+    let saved = results[0]["saved_path"].as_str().expect("saved path");
+    assert!(
+        std::path::Path::new(saved).exists(),
+        "the image is on disk: {saved}"
+    );
+
+    assert_eq!(
+        mock.requests_for("fal-ai/flux/schnell").len(),
+        1,
+        "one fal request"
+    );
+    assert_eq!(mock.requests_for("/v1/images/generations").len(), 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn fal_engine_edit_fails_from_the_web_api() {
+    // D-26/D-30 through the web surface: the capability gate fires before a
+    // socket, so the mock records no request at all.
+    let mock = MockServer::start().await;
+    let out = TempDir::new().unwrap();
+    seed_source_png(out.path(), "source.png");
+    let app = web::router(fal_engine_settings(&mock, out.path()));
+
+    let payload = json!({"prompt": "x", "engine": "fal", "source": "source.png"});
+    let (status, value) = post_json(app, "/api/edit", &payload).await;
+    assert_eq!(status, StatusCode::OK);
+    let body = value.to_string();
+    let failed = value["success"] == false
+        || value["results"]
+            .as_array()
+            .map(|r| r.iter().any(|e| e["success"] == false))
+            .unwrap_or(false);
+    assert!(failed, "the edit is refused: {body}");
+    assert!(
+        body.contains("cannot accept image input for edits"),
+        "and the message names the capability: {body}"
+    );
+    assert!(
+        mock.requests().is_empty(),
+        "the gate fired before a socket: {:?}",
+        mock.requests()
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn history_form_is_served_with_fork_controls() {
     let mock = MockServer::start().await;
