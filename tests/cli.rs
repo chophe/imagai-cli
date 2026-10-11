@@ -148,6 +148,32 @@ async fn list_engines_shows_a_broken_format_declaration_verbatim() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn list_engines_names_the_base_url_each_format_defaults_to() {
+    // WR-01: the base-URL column must name the host the engine actually uses, so
+    // a fal engine with no BASE_URL — the documented minimal fal configuration —
+    // is never presented as running on OpenAI's endpoint. The fal engine carries
+    // a key, so the model-fetch block below the table also runs; the gate from
+    // BLOCKER-2 is what makes that line safe to see here.
+    let mock = MockServer::start().await;
+    let out = TempDir::new().unwrap();
+    cmd(&mock, out.path())
+        .env("IMAGAI__ENGINES__FAL__API_KEY", "fal-secret-key-123")
+        .env("IMAGAI__ENGINES__FAL__MODEL", "fal-ai/flux/schnell")
+        .env("IMAGAI__ENGINES__FAL__FORMAT", "fal")
+        // No API key: the row is still rendered, and the fetch loop skips it, so
+        // this test never addresses a real OpenAI host.
+        .env("IMAGAI__ENGINES__NOURL__MODEL", "dall-e-3")
+        .arg("list-engines")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("N/A (fal.run)"))
+        .stdout(predicate::str::contains("N/A (Official OpenAI)"))
+        // BLOCKER-2, through the real binary: the operator is told why nothing
+        // was fetched rather than being shown a silent or leaked request.
+        .stdout(predicate::str::contains("no model list to fetch"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn the_shipped_env_example_loads_every_engine_it_documents() {
     // CR-01: the example file is a user-facing artifact with one instruction —
     // "Copy this file to .env" — so it is exercised like any other contract. An

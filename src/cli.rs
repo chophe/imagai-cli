@@ -744,10 +744,12 @@ async fn cmd_list_engines(all: bool, settings: &Settings) -> anyhow::Result<()> 
         } else {
             "⚠️ Not Set / Default".yellow().to_string()
         };
+        // The fallback names the format's own default host, so a fal engine is
+        // never presented as running on OpenAI's endpoint (WR-01).
         let base_url = cfg
             .base_url
             .clone()
-            .unwrap_or_else(|| "N/A (Official OpenAI)".to_string());
+            .unwrap_or_else(|| crate::formats::ProviderFormat::default_base_url_label(cfg));
         let model = cfg
             .model
             .clone()

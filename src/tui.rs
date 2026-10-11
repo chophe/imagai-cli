@@ -1677,10 +1677,12 @@ impl App {
             } else {
                 "⚠️ Not Set"
             };
+            // The fallback names the format's own default host, so a fal engine is
+            // never presented as running on OpenAI's endpoint (WR-01).
             let base_url = cfg
                 .base_url
                 .clone()
-                .unwrap_or_else(|| "N/A (Official OpenAI)".to_string());
+                .unwrap_or_else(|| crate::formats::ProviderFormat::default_base_url_label(cfg));
             let model = cfg
                 .model
                 .clone()
@@ -2162,6 +2164,22 @@ mod tests {
         assert!(
             fal_row.contains("fal"),
             "a declared engine reads fal: {rows:?}"
+        );
+        // WR-01: with no BASE_URL the row names the format's own default host
+        // rather than OpenAI's, so the Engines tab cannot claim a fal engine
+        // runs on an endpoint it never uses.
+        assert!(
+            fal_row.contains("N/A (fal.run)"),
+            "the fal row names its own host: {rows:?}"
+        );
+        assert!(
+            !fal_row.contains("Official OpenAI"),
+            "the fal row does not claim OpenAI's host: {rows:?}"
+        );
+        let mock_row_url = mock_row.contains("N/A (Official OpenAI)");
+        assert!(
+            mock_row_url,
+            "an undeclared engine still reads as the OpenAI-compatible default: {rows:?}"
         );
     }
 

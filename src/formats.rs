@@ -138,6 +138,27 @@ impl ProviderFormat {
             None => Self::OpenAiCompatible.as_str().to_string(),
         }
     }
+
+    /// The base-URL label a surface shows when `BASE_URL` is unset.
+    ///
+    /// The format's own default host, for the same reason [`Self::default_host`]
+    /// exists: a fal engine is never presented as running on OpenAI's endpoint
+    /// (WR-01) — in the very table D-32 added to make the new provider
+    /// discoverable. A broken declaration falls back to the OpenAI-compatible
+    /// label, which is what an undeclared engine shows, while the raw typo stays
+    /// visible in the format column beside it (D-24).
+    ///
+    /// One helper beside `format_label`, so the CLI table and the TUI panel
+    /// cannot disagree about where an engine's requests go.
+    pub fn default_base_url_label(cfg: &EngineConfig) -> String {
+        let format = Self::declared(cfg)
+            .and_then(Self::from_declared)
+            .unwrap_or(Self::OpenAiCompatible);
+        match format {
+            Self::Fal => "N/A (fal.run)".to_string(),
+            Self::OpenAiCompatible => "N/A (Official OpenAI)".to_string(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -272,5 +293,26 @@ mod tests {
         let broken = cfg(Some("bogus"));
         assert!(ProviderFormat::resolve("e", &broken).is_err());
         assert_eq!(ProviderFormat::format_label(&broken), "bogus");
+    }
+
+    #[test]
+    fn the_base_url_label_names_the_format_its_own_default_host() {
+        // WR-01: the discovery table must not present a fal engine as running on
+        // OpenAI's endpoint.
+        assert_eq!(
+            ProviderFormat::default_base_url_label(&cfg(None)),
+            "N/A (Official OpenAI)"
+        );
+        assert_eq!(
+            ProviderFormat::default_base_url_label(&cfg(Some("fal"))),
+            "N/A (fal.run)"
+        );
+        // A configured BASE_URL is shown as-is by the caller; this helper is only
+        // the fallback. A broken declaration keeps the OpenAI-compatible fallback
+        // while its raw value stays visible in the format column (D-24).
+        assert_eq!(
+            ProviderFormat::default_base_url_label(&cfg(Some("bogus"))),
+            "N/A (Official OpenAI)"
+        );
     }
 }
