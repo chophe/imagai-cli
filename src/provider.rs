@@ -650,7 +650,7 @@ async fn fal_generate(
         eprintln!("--------------------");
     }
 
-    let resp = client
+    let resp = match client
         .post(&url)
         // T-03-04: `Key`, not `Bearer` — that is what fal documents, so the
         // header is set explicitly rather than reusing `bearer_auth`.
@@ -660,9 +660,26 @@ async fn fal_generate(
         )
         .json(&body)
         .send()
-        .await?;
+        .await
+    {
+        Ok(r) => r,
+        // WR-03: envelope parity with the OpenAI-compatible path, which names the
+        // engine at both failure points (`src/provider.rs`'s `request error:` and
+        // `failed reading response:`). A bare `reqwest::Error` reaches the
+        // operator as `error sending request for url (…)` with no engine and no
+        // way to tell which engine of several failed.
+        Err(e) => anyhow::bail!("Engine '{}' fal request failed: {e}", request.engine),
+    };
     let status = resp.status();
-    let text = resp.text().await?;
+    let text = match resp.text().await {
+        Ok(t) => t,
+        // A non-UTF8 body is the one unmapped shape that is not a status: the
+        // engine still has to be named (WR-03, D-35).
+        Err(e) => anyhow::bail!(
+            "Engine '{}' fal response body could not be read: {e}",
+            request.engine
+        ),
+    };
 
     if !status.is_success() {
         // D-37: map the documented shape, fall back to the truncated raw body.

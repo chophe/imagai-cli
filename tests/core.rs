@@ -950,3 +950,46 @@ async fn openai_compatible_engine_discovery_is_unchanged() {
     assert!(ids.contains(&"dall-e-3".to_string()), "{ids:?}");
     assert_eq!(mock.requests_for("/v1/models").len(), 1);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn fal_send_failure_names_the_engine() {
+    // WR-03: a connection failure used to reach the operator as a bare
+    // `error sending request for url (…)` — no engine, and no way to tell which
+    // engine of several failed. The port was listening a moment ago and is not
+    // now, so the failure is immediate rather than a timeout.
+    let closed = std::net::TcpListener::bind("127.0.0.1:0").expect("bind a port");
+    let port = closed.local_addr().expect("local addr").port();
+    drop(closed);
+    let out = TempDir::new().unwrap();
+    let out_path = out.path().to_path_buf();
+
+    let settings = Settings {
+        output_dir: out_path,
+        default_engine: Some("fal".to_string()),
+        engines: HashMap::from([(
+            "fal".to_string(),
+            EngineConfig {
+                api_key: "test".to_string(),
+                base_url: Some(format!("http://127.0.0.1:{port}/v1")),
+                model: Some("fal-ai/flux/schnell".to_string()),
+                format: Some("fal".to_string()),
+            },
+        )]),
+    };
+
+    let request = ImageGenerationRequest {
+        prompt: "a fal cat".to_string(),
+        engine: "fal".to_string(),
+        ..Default::default()
+    };
+
+    let results = generate_image_core(&request, &settings).await;
+    assert_eq!(results.len(), 1);
+    let err = results[0].error.as_deref().expect("error message");
+    assert!(err.contains("Engine 'fal'"), "names the engine: {err}");
+    assert!(
+        err.contains("fal request failed"),
+        "names the failing step: {err}"
+    );
+    assert!(results[0].saved_path.is_none(), "no phantom save");
+}
