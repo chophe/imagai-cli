@@ -53,7 +53,18 @@ impl Settings {
             .flatten()
         {
             if dir.join(".env").is_file() {
-                let _ = dotenvy::from_path(dir.join(".env"));
+                // A malformed `.env` aborts the whole file — dotenvy stops at the
+                // first line it cannot parse — so discarding the error left a
+                // broken file indistinguishable from an empty one: zero engines
+                // and no diagnostic (WR-06, and what turned CR-01 into silent
+                // total config loss). Same non-fatal `[warning]` convention as
+                // the output dir below.
+                if let Err(e) = dotenvy::from_path(dir.join(".env")) {
+                    eprintln!(
+                        "[warning] could not parse {}: {e}",
+                        dir.join(".env").display()
+                    );
+                }
                 break;
             }
         }

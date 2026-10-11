@@ -148,6 +148,53 @@ async fn list_engines_shows_a_broken_format_declaration_verbatim() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn the_shipped_env_example_loads_every_engine_it_documents() {
+    // CR-01: the example file is a user-facing artifact with one instruction —
+    // "Copy this file to .env" — so it is exercised like any other contract. An
+    // unparseable line aborts the whole file, which silently drops every engine
+    // it documents, including the working OpenAI ones.
+    let out = TempDir::new().unwrap();
+    let example = Path::new(env!("CARGO_MANIFEST_DIR")).join(".env.example");
+    std::fs::copy(&example, out.path().join(".env")).expect("copy .env.example");
+
+    Command::cargo_bin("imagai")
+        .unwrap()
+        // The process reads `.env` from its working directory, so the copy under
+        // test is the one it walks up to instead of the repo's own tree.
+        .current_dir(out.path())
+        .arg("list-engines")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("openai_dalle3"))
+        .stdout(predicate::str::contains("openai_gpt"))
+        .stderr(predicate::str::contains("could not parse").not());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_malformed_env_file_is_reported_not_swallowed() {
+    // WR-06: a `.env` that fails to parse must name the failure rather than
+    // loading nothing in silence, so a broken file can never be mistaken for
+    // "the user configured nothing".
+    let out = TempDir::new().unwrap();
+    std::fs::write(
+        out.path().join(".env"),
+        "IMAGAI__ENGINES__<NAME>__FORMAT=openai\n\
+         IMAGAI__ENGINES__GOOD__API_KEY=test-key\n\
+         IMAGAI__ENGINES__GOOD__MODEL=dall-e-3\n",
+    )
+    .expect("write .env");
+
+    Command::cargo_bin("imagai")
+        .unwrap()
+        .current_dir(out.path())
+        .arg("list-engines")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No engines configured"))
+        .stderr(predicate::str::contains("could not parse"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn openai_default_engine_body_is_unchanged() {
     // Success criterion 3 / D-28's executable form. The expected key set is the
     // pre-phase shape recorded when this phase was planned, so an accidental fal
