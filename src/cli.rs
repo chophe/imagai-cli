@@ -754,10 +754,11 @@ async fn cmd_list_engines(all: bool, settings: &Settings) -> anyhow::Result<()> 
             .model
             .clone()
             .unwrap_or_else(|| "Not specified".to_string());
-        // The one display helper the TUI and the web `/api/engines` response
-        // also call, so the three surfaces cannot drift. A broken declaration
-        // shows its raw value here rather than a resolved default (D-24).
-        let format = crate::formats::ProviderFormat::format_label(cfg).magenta();
+        // A broken declaration shows its raw value because `format_label` returns
+        // it verbatim (D-24) — clipped to the column so the remaining columns stay
+        // aligned (IN-03); the full value still reaches `/api/engines` and the
+        // first request's error.
+        let format = crate::formats::ProviderFormat::format_label_cell(cfg, 12).magenta();
         println!(
             "{:<24} {:<12} {:<34} {:<28} {:<22}",
             name.cyan(),

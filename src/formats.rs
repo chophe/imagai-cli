@@ -159,6 +159,24 @@ impl ProviderFormat {
             Self::OpenAiCompatible => "N/A (Official OpenAI)".to_string(),
         }
     }
+
+    /// The format label clipped to a table column, with an ellipsis.
+    ///
+    /// D-24 requires a broken declaration to render verbatim, and it still is:
+    /// `format_label` carries the full value, `/api/engines` emits it, and the
+    /// first request's error names it. What a fixed-width table cannot absorb is
+    /// a 40-character typo — it used to shift Base URL, Default Model and API Key
+    /// Set off their columns entirely (IN-03). One helper beside `format_label`,
+    /// so the CLI table and the TUI panel clip the same way.
+    pub fn format_label_cell(cfg: &EngineConfig, width: usize) -> String {
+        let label = Self::format_label(cfg);
+        if label.chars().count() <= width {
+            return label;
+        }
+        let mut clipped: String = label.chars().take(width.saturating_sub(1)).collect();
+        clipped.push('…');
+        clipped
+    }
 }
 
 #[cfg(test)]
@@ -313,6 +331,31 @@ mod tests {
         assert_eq!(
             ProviderFormat::default_base_url_label(&cfg(Some("bogus"))),
             "N/A (Official OpenAI)"
+        );
+    }
+
+    #[test]
+    fn the_format_cell_is_clipped_but_the_label_is_not() {
+        // IN-03: a long raw declaration must not push the other columns out of a
+        // fixed-width table, while D-24 still requires the full value somewhere —
+        // which is what `format_label` and `/api/engines` carry.
+        let typo = "a".repeat(40);
+        let cell = ProviderFormat::format_label_cell(&cfg(Some(&typo)), 12);
+        assert_eq!(cell.chars().count(), 12, "clipped to the column width");
+        assert!(cell.ends_with('…'), "the clip is marked: {cell}");
+        assert_eq!(
+            ProviderFormat::format_label(&cfg(Some(&typo))),
+            typo,
+            "the full value survives in the label helper"
+        );
+        // A label that fits is untouched.
+        assert_eq!(
+            ProviderFormat::format_label_cell(&cfg(Some("fal")), 12),
+            "fal"
+        );
+        assert_eq!(
+            ProviderFormat::format_label_cell(&cfg(Some("openai")), 12),
+            "openai"
         );
     }
 }

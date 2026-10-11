@@ -1695,9 +1695,14 @@ impl App {
             };
             let spans = vec![
                 Span::styled(format!("{name:<20}"), name_style),
-                // Display-only per D-34: no filter, no format selector.
+                // Display-only per D-34: no filter, no format selector. Clipped to
+                // the column so a long raw declaration cannot misalign the TUI
+                // table (IN-03); the full value still reaches `/api/engines` (D-24).
                 Span::styled(
-                    format!("{:<10}", crate::formats::ProviderFormat::format_label(cfg)),
+                    format!(
+                        "{:<10}",
+                        crate::formats::ProviderFormat::format_label_cell(cfg, 10)
+                    ),
                     Style::default().fg(Color::Magenta),
                 ),
                 Span::styled(format!("{model:<30}"), Style::default().fg(Color::Yellow)),

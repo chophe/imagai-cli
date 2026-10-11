@@ -174,6 +174,29 @@ async fn list_engines_names_the_base_url_each_format_defaults_to() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn list_engines_clips_a_long_format_declaration_to_its_column() {
+    // IN-03: D-24 requires a broken declaration to render verbatim, but a
+    // 40-character typo used to shift Base URL, Default Model and API Key Set off
+    // their columns. The cell is clipped, the full value stays in `/api/engines`
+    // and in the first request's error.
+    let mock = MockServer::start().await;
+    let out = TempDir::new().unwrap();
+    let typo = "a".repeat(40);
+    cmd(&mock, out.path())
+        .env("IMAGAI__ENGINES__MOCK4__FORMAT", &typo)
+        .env("IMAGAI__ENGINES__MOCK4__API_KEY", "test-key")
+        .env("IMAGAI__ENGINES__MOCK4__MODEL", "dall-e-3")
+        .arg("list-engines")
+        .assert()
+        .success()
+        // Clipped to the 12-wide column, with the next column still starting
+        // where the header says it does.
+        .stdout(predicate::str::contains("aaaaaaaaaaa… dall-e-3"))
+        // D-24: the full value is not lost — the error names the whole typo.
+        .stdout(predicate::str::contains(typo.as_str()));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn the_shipped_env_example_loads_every_engine_it_documents() {
     // CR-01: the example file is a user-facing artifact with one instruction —
     // "Copy this file to .env" — so it is exercised like any other contract. An
