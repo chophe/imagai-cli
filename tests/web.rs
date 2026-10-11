@@ -914,8 +914,21 @@ async fn history_form_is_served_with_engine_format_labels() {
         html.contains("engine.format"),
         "the option label template reads the API's format field"
     );
-    // All three pickers that carry the label are present in the served page.
-    for needle in ["engine", "edit_engine", "history_engine"] {
+    // IN-02: the old `for needle in ["engine", ...]` loop was satisfied by any
+    // script line containing the word "engine" in a 1300-line SPA. Assert the
+    // template's own count instead — the generate, edit and history pickers each
+    // build their options from it — and name each picker's `<select>` id, which
+    // is what its loader actually reaches for.
+    assert_eq!(
+        html.matches("${engine.format}").count(),
+        3,
+        "the generate, edit and history pickers each render the format label"
+    );
+    for needle in [
+        "id=\"engine\"",
+        "id=\"edit_engine\"",
+        "id=\"history_engine\"",
+    ] {
         assert!(html.contains(needle), "served HTML contains {needle}");
     }
 }
