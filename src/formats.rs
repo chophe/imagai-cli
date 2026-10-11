@@ -88,6 +88,19 @@ impl ProviderFormat {
         }
     }
 
+    /// The engine's trimmed, non-empty declared `FORMAT` value, if any.
+    ///
+    /// The single expression of D-24/D-29's precedence rule: [`Self::resolve`]
+    /// and [`Self::format_label`] both read the declaration through here, so
+    /// "what resolves" and "what is displayed" cannot drift apart (IN-01). A
+    /// third format therefore means editing one match, not two parallel ones.
+    fn declared(cfg: &EngineConfig) -> Option<&str> {
+        cfg.format
+            .as_deref()
+            .map(str::trim)
+            .filter(|d| !d.is_empty())
+    }
+
     /// Resolve the format an engine's requests will be built with.
     ///
     /// Precedence is D-29's: a trimmed, non-empty declared value must be a
@@ -97,12 +110,7 @@ impl ProviderFormat {
     /// (`model.contains("dall-e-3")`, `stability`, `openrouter.ai` + `gemini`)
     /// stays in `src/provider.rs`, untouched by this phase.
     pub fn resolve(engine: &str, cfg: &EngineConfig) -> anyhow::Result<Self> {
-        if let Some(declared) = cfg
-            .format
-            .as_deref()
-            .map(str::trim)
-            .filter(|d| !d.is_empty())
-        {
+        if let Some(declared) = Self::declared(cfg) {
             return match Self::from_declared(declared) {
                 Some(f) => Ok(f),
                 None => anyhow::bail!(
@@ -122,12 +130,7 @@ impl ProviderFormat {
     /// the CLI, TUI and web surfaces all call, so the column cannot drift
     /// between them.
     pub fn format_label(cfg: &EngineConfig) -> String {
-        match cfg
-            .format
-            .as_deref()
-            .map(str::trim)
-            .filter(|d| !d.is_empty())
-        {
+        match Self::declared(cfg) {
             Some(declared) => match Self::from_declared(declared) {
                 Some(f) => f.as_str().to_string(),
                 None => declared.to_string(),
@@ -247,5 +250,27 @@ mod tests {
         assert_eq!(ProviderFormat::format_label(&cfg(Some("fal"))), "fal");
         assert_eq!(ProviderFormat::format_label(&cfg(Some("bogus"))), "bogus");
         assert_eq!(ProviderFormat::format_label(&cfg(Some(" FAL "))), "fal");
+    }
+
+    #[test]
+    fn resolve_and_format_label_read_the_same_declaration() {
+        // IN-01's guard: the precedence rule has one expression, so what resolves
+        // and what is displayed cannot disagree. A future divergence between the
+        // two fails here rather than in the field.
+        for declared in [None, Some("fal"), Some(" FAL "), Some("openai")] {
+            let cfg = cfg(declared);
+            let resolved = ProviderFormat::resolve("e", &cfg)
+                .expect("a member of the closed set resolves")
+                .as_str();
+            assert_eq!(
+                ProviderFormat::format_label(&cfg),
+                resolved,
+                "declaration {declared:?} must display what it resolves to"
+            );
+        }
+        // And where it does not resolve, the label carries the raw value.
+        let broken = cfg(Some("bogus"));
+        assert!(ProviderFormat::resolve("e", &broken).is_err());
+        assert_eq!(ProviderFormat::format_label(&broken), "bogus");
     }
 }
