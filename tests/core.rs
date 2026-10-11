@@ -993,3 +993,105 @@ async fn fal_send_failure_names_the_engine() {
     );
     assert!(results[0].saved_path.is_none(), "no phantom save");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn fal_html_error_body_falls_back_to_the_truncated_raw_body() {
+    // WR-05 / D-37: the most likely real-world unmapped shape — an HTML 502 from
+    // a proxy — was only ever covered by JSON bodies. It must travel through the
+    // envelope as the truncated raw body plus the status, never a panic and never
+    // a silent success.
+    let mock = MockServer::start().await;
+    let html = format!(
+        "<html><head><title>502 Bad Gateway</title></head><body>{}",
+        "x".repeat(600)
+    );
+    mock.set_fal_mode(common::FalMode::RawError {
+        status: 502,
+        body: html.clone().into_bytes(),
+    });
+    let out = TempDir::new().unwrap();
+    let settings = fal_settings(&mock, out.path());
+
+    let request = ImageGenerationRequest {
+        prompt: "a fal cat".to_string(),
+        engine: "fal".to_string(),
+        ..Default::default()
+    };
+
+    let results = generate_image_core(&request, &settings).await;
+    assert_eq!(results.len(), 1);
+    let err = results[0].error.as_deref().expect("error message");
+    assert!(err.contains("Engine 'fal'"), "names the engine: {err}");
+    assert!(err.contains("502"), "names the status: {err}");
+    assert!(
+        err.contains(&html[..400]),
+        "carries the first 400 bytes of the body: {err}"
+    );
+    assert!(err.contains('…'), "marks the truncation: {err}");
+    assert!(
+        !err.contains(&html[..500]),
+        "does not carry the whole 600-byte body: {err}"
+    );
+    assert!(results[0].saved_path.is_none(), "no phantom save");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn fal_empty_error_body_is_a_named_failure() {
+    // WR-05 / WR-02's observed shape: fal answers an unknown model path with
+    // `content-length: 0`, so the fallback has nothing to say. The envelope still
+    // names the engine and the status instead of degenerating into a bare
+    // "…: " with no cause.
+    let mock = MockServer::start().await;
+    mock.set_fal_mode(common::FalMode::RawError {
+        status: 404,
+        body: Vec::new(),
+    });
+    let out = TempDir::new().unwrap();
+    let settings = fal_settings(&mock, out.path());
+
+    let request = ImageGenerationRequest {
+        prompt: "a fal cat".to_string(),
+        engine: "fal".to_string(),
+        ..Default::default()
+    };
+
+    let results = generate_image_core(&request, &settings).await;
+    assert_eq!(results.len(), 1);
+    let err = results[0].error.as_deref().expect("error message");
+    assert!(err.contains("Engine 'fal'"), "names the engine: {err}");
+    assert!(err.contains("404"), "names the status: {err}");
+    assert!(results[0].saved_path.is_none(), "no phantom save");
+    assert!(mock.requests_for("/img/").is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn fal_non_utf8_error_body_is_a_named_failure() {
+    // WR-05: an undecodable body is the one unmapped shape with no `detail` and
+    // no readable content. It must never panic and never look like a success.
+    let mock = MockServer::start().await;
+    // Valid UTF-8 up to the last byte, then invalid — not a truncation artifact.
+    mock.set_fal_mode(common::FalMode::RawError {
+        status: 500,
+        body: vec![0x66, 0x61, 0x6c, 0xff, 0xfe],
+    });
+    let out = TempDir::new().unwrap();
+    let settings = fal_settings(&mock, out.path());
+
+    let request = ImageGenerationRequest {
+        prompt: "a fal cat".to_string(),
+        engine: "fal".to_string(),
+        ..Default::default()
+    };
+
+    let results = generate_image_core(&request, &settings).await;
+    assert_eq!(results.len(), 1);
+    let err = results[0].error.as_deref().expect("error message");
+    assert!(err.contains("Engine 'fal'"), "names the engine: {err}");
+    assert!(err.contains("500"), "names the status: {err}");
+    assert!(results[0].saved_path.is_none(), "no phantom save");
+    assert_eq!(
+        mock.requests_for("fal-ai/flux/schnell").len(),
+        1,
+        "the request was made and answered; only the body defeated us"
+    );
+}

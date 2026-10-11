@@ -51,6 +51,11 @@ pub enum FalMode {
     },
     /// Return a raw, unparseable body with status 200.
     Unparseable { body: String },
+    /// Return a raw body — gateway HTML, empty, or not even valid UTF-8 — with a
+    /// failure status. D-37's best-effort fallback path: `fal_error_message` maps
+    /// none of these shapes, so the truncated raw body and the HTTP status have
+    /// to travel through the envelope instead of a mapped `detail`.
+    RawError { status: u16, body: Vec<u8> },
 }
 
 /// Raw request bytes captured per path, for multipart wire-format assertions.
@@ -321,6 +326,11 @@ async fn fal_logic(state: MockState, uri: &Uri) -> Response {
                 .into_response()
         }
         FalMode::Unparseable { body } => (StatusCode::OK, body).into_response(),
+        FalMode::RawError { status, body } => (
+            StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_REQUEST),
+            body,
+        )
+            .into_response(),
     }
 }
 
