@@ -1113,6 +1113,14 @@ mod tests {
 
     #[test]
     fn fal_body_carries_only_fal_keys() {
+        // The scope of this assertion, stated: the *default* fal body — a request
+        // carrying no `extra_params`. D-31 keeps `extra_params` unchanged for both
+        // families, so it is the documented escape hatch, not a hole to plug: an
+        // OpenAI-shaped key arriving through it travels (see
+        // `fal_body_merges_openai_shaped_keys_from_extra_params`). Only
+        // `output_format` is pinned, because the shared save path writes PNG
+        // metadata into a `.png` filename and a JPEG payload would corrupt it
+        // (D-27).
         let body =
             build_fal_images_body(&request_with_extra(HashMap::new())).expect("fal body builds");
         assert_eq!(body["prompt"], "a cat");
@@ -1126,6 +1134,25 @@ mod tests {
                 "unexpected OpenAI key '{openai_key}' in {body}"
             );
         }
+    }
+
+    #[test]
+    fn fal_body_merges_openai_shaped_keys_from_extra_params() {
+        // IN-05, recorded rather than guarded: D-31 says `extra_params` is unchanged
+        // for both families and no CLI/web surface can reach these keys (the seven
+        // named flags only), so a library caller *can* ask for them and gets what
+        // it asked for. The adapter's own invariants — the pinned `output_format`
+        // (D-27) and the absent model id, which lives in the URL path (D-36) —
+        // still win, which is the line between "escape hatch" and "hole".
+        let mut extra = HashMap::new();
+        for key in ["model", "n", "size", "response_format", "quality", "style"] {
+            extra.insert(key.to_string(), json!("openai-shaped"));
+        }
+        let body = build_fal_images_body(&request_with_extra(extra)).expect("fal body builds");
+        for key in ["model", "n", "size", "response_format", "quality", "style"] {
+            assert_eq!(body[key], "openai-shaped", "{key} travels unchanged");
+        }
+        assert_eq!(body["output_format"], "png", "the adapter still wins here");
     }
 
     #[test]
