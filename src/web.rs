@@ -166,6 +166,12 @@ async fn list_engines(State(state): State<AppState>) -> Json<Value> {
                 "name": name,
                 "model": cfg.model,
                 "base_url": cfg.base_url,
+                // The same helper `src/cli.rs`'s `cmd_list_engines` and
+                // `src/tui.rs`'s `engine_rows` call, so the API, the CLI table
+                // and the TUI table cannot drift (D-32, D-34) — one grammar,
+                // three surfaces. A broken declaration reports its raw value
+                // rather than a resolved default (D-24).
+                "format": crate::formats::ProviderFormat::format_label(cfg),
             })
         })
         .collect();

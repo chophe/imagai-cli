@@ -89,14 +89,63 @@ async fn root_serves_html() {
 async fn engines_endpoint() {
     let mock = MockServer::start().await;
     let out = TempDir::new().unwrap();
-    let app = web::router(test_settings(&mock, out.path()));
+    let mut settings = test_settings(&mock, out.path());
+    // `engine_names()` is sorted, so a second engine is added locally rather
+    // than editing the shared `test_settings` helper the other tests use.
+    settings.engines.insert(
+        "fal".to_string(),
+        EngineConfig {
+            api_key: "test-key".to_string(),
+            base_url: Some(mock.base_url()),
+            model: Some("fal-ai/flux/schnell".to_string()),
+            format: Some("fal".to_string()),
+        },
+    );
+    let app = web::router(settings);
 
     let (status, value) = get(app, "/api/engines").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(value["success"], true);
     assert_eq!(value["default_engine"], "mock");
-    assert_eq!(value["engines"][0]["name"], "mock");
-    assert_eq!(value["engines"][0]["model"], "dall-e-3");
+
+    let engines = value["engines"].as_array().expect("engines array");
+    let find = |name: &str| -> &Value {
+        engines
+            .iter()
+            .find(|e| e["name"] == name)
+            .unwrap_or_else(|| panic!("engine '{name}' is listed: {engines:?}"))
+    };
+    // D-32: the format field is present on every entry, from the shared helper.
+    assert_eq!(find("mock")["format"], "openai");
+    assert_eq!(find("mock")["model"], "dall-e-3");
+    assert_eq!(find("fal")["format"], "fal");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn engines_endpoint_reports_a_broken_format_declaration_verbatim() {
+    let mock = MockServer::start().await;
+    let out = TempDir::new().unwrap();
+    let mut settings = test_settings(&mock, out.path());
+    settings.engines.insert(
+        "typo".to_string(),
+        EngineConfig {
+            api_key: "test-key".to_string(),
+            base_url: Some(mock.base_url()),
+            model: Some("dall-e-3".to_string()),
+            format: Some("bogus".to_string()),
+        },
+    );
+    let app = web::router(settings);
+
+    let (status, value) = get(app, "/api/engines").await;
+    assert_eq!(status, StatusCode::OK);
+    let engines = value["engines"].as_array().expect("engines array");
+    let typo = engines
+        .iter()
+        .find(|e| e["name"] == "typo")
+        .unwrap_or_else(|| panic!("engine 'typo' is listed: {engines:?}"));
+    // D-24/T-03-09: the raw value, not a resolved default.
+    assert_eq!(typo["format"], "bogus");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -846,6 +895,29 @@ async fn fork_endpoint_refuses_a_file_that_lives_only_in_the_cwd() {
         !out.path().join(".imagai-history.json").exists(),
         "and it is never adopted as a root node"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn history_form_is_served_with_engine_format_labels() {
+    let mock = MockServer::start().await;
+    let out = TempDir::new().unwrap();
+    let app = web::router(test_settings(&mock, out.path()));
+
+    // `web_interface.html` is `include_str!`-ed at compile time, so a serve
+    // test proves the edited file is embedded and reaches the browser.
+    let (status, value) = get(app, "/").await;
+    assert_eq!(status, StatusCode::OK);
+    let html = value.as_str().expect("HTML body");
+    // The label token proves the SPA renders the field `/api/engines` emits
+    // rather than a hardcoded string.
+    assert!(
+        html.contains("engine.format"),
+        "the option label template reads the API's format field"
+    );
+    // All three pickers that carry the label are present in the served page.
+    for needle in ["engine", "edit_engine", "history_engine"] {
+        assert!(html.contains(needle), "served HTML contains {needle}");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]

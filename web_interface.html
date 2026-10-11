@@ -845,7 +845,12 @@
                     result.engines.forEach(engine => {
                         const option = document.createElement('option');
                         option.value = engine.name;
-                        option.textContent = `${engine.name} (${engine.model})`;
+                        // The format is display-only (D-34): no filter, no
+                        // format selector. `value` stays the engine name, so
+                        // selection is unchanged (D-33). textContent — never
+                        // innerHTML — because the name and format reach this
+                        // string from configuration (T-03-12).
+                        option.textContent = `${engine.name} (${engine.model}) · ${engine.format}`;
                         engineSelect.appendChild(option);
                     });
 
@@ -864,7 +869,8 @@
                         result.engines.forEach(engine => {
                             const option = document.createElement('option');
                             option.value = engine.name;
-                            option.textContent = `${engine.name} (${engine.model})`;
+                            // Same display-only label as the generate picker (D-34).
+                            option.textContent = `${engine.name} (${engine.model}) · ${engine.format}`;
                             editEngineSelect.appendChild(option);
                         });
                         if (result.default_engine) {
@@ -881,7 +887,8 @@
                         result.engines.forEach(engine => {
                             const option = document.createElement('option');
                             option.value = engine.name;
-                            option.textContent = `${engine.name} (${engine.model})`;
+                            // Same display-only label as the generate picker (D-34).
+                            option.textContent = `${engine.name} (${engine.model}) · ${engine.format}`;
                             historyEngineSelect.appendChild(option);
                         });
                         if (result.default_engine) {
