@@ -4,9 +4,10 @@ use std::path::Path;
 use serde_json::{json, Value};
 
 use crate::config::EngineConfig;
+use crate::formats::ProviderFormat;
 use crate::models::{
-    ChatImage, ChatResponse, ImageGenerationRequest, ImageGenerationResponse, ImagesResponse,
-    ModelsListResponse,
+    ChatImage, ChatResponse, FalImagesResponse, ImageGenerationRequest, ImageGenerationResponse,
+    ImagesResponse, ModelsListResponse,
 };
 
 /// Build a shared HTTP client.
@@ -209,6 +210,31 @@ pub async fn generate_images(
         .model
         .clone()
         .unwrap_or_else(|| "dall-e-3".to_string());
+
+    // The declared format decides which adapter builds the body. The fal branch
+    // is entered only when the declared format resolves to `Fal`, which is what
+    // keeps D-28's no-regression guarantee structural rather than incidental:
+    // an engine that declares nothing resolves to the OpenAI-compatible family
+    // and reaches the code below exactly as it did before this phase.
+    let format = match crate::formats::ProviderFormat::resolve(&request.engine, config) {
+        Ok(f) => f,
+        Err(e) => {
+            return vec![ImageGenerationResponse {
+                error: Some(e.to_string()),
+                ..Default::default()
+            }]
+        }
+    };
+    if matches!(format, ProviderFormat::Fal) {
+        return match fal_generate(request, config, &model).await {
+            Ok(r) => r,
+            Err(e) => vec![ImageGenerationResponse {
+                error: Some(e.to_string()),
+                ..Default::default()
+            }],
+        };
+    }
+
     let is_openrouter = config
         .base_url
         .as_deref()
@@ -500,6 +526,142 @@ pub async fn generate_edits(
     responses
 }
 
+/// The fal family's endpoint host, parallel to the OpenAI-compatible default in
+/// [`resolve_url`]: a fal engine works with only an API key, a model and a
+/// format.
+fn fal_base_url(config: &EngineConfig) -> Option<String> {
+    config
+        .base_url
+        .clone()
+        .or_else(|| Some("https://fal.run".to_string()))
+}
+
+/// Build the fal request body.
+///
+/// The model id is deliberately absent — it is in the URL path (D-36). `prompt`,
+/// `num_images` and `output_format` are assigned *after* the `extra_params`
+/// merge so the adapter's own invariant wins: the shared pipeline writes the
+/// response bytes into a `.png` filename and inserts PNG `tEXt` chunks, so a
+/// JPEG payload would produce a corrupt file and the save path cannot be
+/// changed (D-27).
+fn build_fal_images_body(request: &ImageGenerationRequest) -> anyhow::Result<serde_json::Value> {
+    let mut body = json!({});
+    // D-31: `extra_params` remains the escape hatch, unchanged for both families.
+    for (k, v) in &request.extra_params {
+        body[k] = v.clone();
+    }
+    body["prompt"] = json!(request.prompt);
+    body["num_images"] = json!(request.n.max(1));
+    body["image_size"] = json!(fal_image_size(&request.engine, &request.size)?);
+    body["output_format"] = json!("png");
+    Ok(body)
+}
+
+/// Map one of the three standard OpenAI sizes onto fal's `image_size` enum.
+///
+/// Hard failure rather than truncation: silently dropping an unmapped size would
+/// hand the provider its own default (`landscape_4_3`) and give the user a
+/// landscape image they never asked for. A size the enum lacks is passed through
+/// `extra_params` instead (D-31).
+fn fal_image_size(engine: &str, size: &str) -> anyhow::Result<&'static str> {
+    match size {
+        "1024x1024" => Ok("square_hd"),
+        "1024x1792" => Ok("portrait_4_3"),
+        "1792x1024" => Ok("landscape_4_3"),
+        _ => anyhow::bail!(
+            "Engine '{engine}' cannot request the size '{size}' from the 'fal' format; \
+             supported sizes: 1024x1024, 1024x1792, 1792x1024. \
+             Pass provider-specific fields through extra_params."
+        ),
+    }
+}
+
+/// Parse a fal documented response into the shared [`ImageGenerationResponse`]
+/// shape, so `save_image_from_url` / `save_image_from_b64`, `record_result` and
+/// the PNG lineage all work unchanged (D-27).
+async fn fal_generate(
+    request: &ImageGenerationRequest,
+    config: &EngineConfig,
+    model: &str,
+) -> anyhow::Result<Vec<ImageGenerationResponse>> {
+    let client = http_client()?;
+    // The model id is the path: `https://fal.run/fal-ai/flux/schnell`.
+    let url = resolve_url(&fal_base_url(config), model);
+    let body = build_fal_images_body(request)?;
+
+    if request.verbose {
+        eprintln!("--- fal Request ---");
+        eprintln!("{url}");
+        eprintln!(
+            "{}",
+            serde_json::to_string_pretty(&body).unwrap_or_default()
+        );
+        eprintln!("--------------------");
+    }
+
+    let resp = client
+        .post(&url)
+        // T-03-04: `Key`, not `Bearer` — that is what fal documents, so the
+        // header is set explicitly rather than reusing `bearer_auth`.
+        .header(
+            reqwest::header::AUTHORIZATION,
+            format!("Key {}", config.api_key),
+        )
+        .json(&body)
+        .send()
+        .await?;
+    let status = resp.status();
+    let text = resp.text().await?;
+
+    if !status.is_success() {
+        // D-37: map the documented shape, fall back to the truncated raw body.
+        let msg = fal_error_message(&text).unwrap_or_else(|| truncate(&text, 400));
+        anyhow::bail!(
+            "Engine '{}' fal request failed ({status}): {msg}",
+            request.engine
+        );
+    }
+
+    // D-35: a 200 that is not the documented shape is a named failure, never a
+    // panicking half-parse and never a silent zero-image success.
+    let parsed: FalImagesResponse = match serde_json::from_str(&text) {
+        Ok(p) => p,
+        Err(e) => {
+            anyhow::bail!(
+                "Engine '{}' returned an unparseable response (HTTP {status}): {} [{e}]",
+                request.engine,
+                truncate(&text, 400)
+            )
+        }
+    };
+
+    let mut responses = Vec::with_capacity(parsed.images.len());
+    for img in parsed.images {
+        let mut r = ImageGenerationResponse::default();
+        // The same data-URI handling `openrouter_chat_generate` uses.
+        if let Some(url) = img.url {
+            if url.starts_with("data:") {
+                match url.split_once(',') {
+                    Some((_, b64)) => r.image_b64_json = Some(b64.to_string()),
+                    None => r.error = Some("No image data found in API response.".to_string()),
+                }
+            } else {
+                r.image_url = Some(url);
+            }
+        } else {
+            r.error = Some("No image data found in API response.".to_string());
+        }
+        responses.push(r);
+    }
+    if responses.is_empty() {
+        responses.push(ImageGenerationResponse {
+            error: Some("API returned no images.".to_string()),
+            ..Default::default()
+        });
+    }
+    Ok(responses)
+}
+
 /// Build the request body for the OpenAI-compatible images API.
 ///
 /// Special cases:
@@ -703,6 +865,45 @@ fn extract_text_content(v: &Value) -> Option<String> {
                 None
             } else {
                 Some(parts.join("\n"))
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Map fal's documented error shapes into the standard envelope grammar (D-37).
+///
+/// Returns `None` for anything unmapped, so the caller falls back to the
+/// truncated raw body with the HTTP status — never a panic, never a silent
+/// success.
+fn fal_error_message(text: &str) -> Option<String> {
+    let v: Value = serde_json::from_str(text).ok()?;
+    let detail = v.get("detail")?;
+    match detail {
+        // Flat infrastructure failure: `{"detail": "...", "error_type": "..."}`.
+        Value::String(msg) => {
+            let etype = v.get("error_type").and_then(|t| t.as_str());
+            Some(match etype {
+                Some(t) => format!("{msg} (type: {t})"),
+                None => msg.clone(),
+            })
+        }
+        // Model validation failure: `{"detail": [{"msg": ..., "type": ...}]}`.
+        Value::Array(items) => {
+            let parts: Vec<String> = items
+                .iter()
+                .filter_map(|item| {
+                    let msg = item.get("msg").and_then(|m| m.as_str())?;
+                    Some(match item.get("type").and_then(|t| t.as_str()) {
+                        Some(t) => format!("{msg} (type: {t})"),
+                        None => msg.to_string(),
+                    })
+                })
+                .collect();
+            if parts.is_empty() {
+                None
+            } else {
+                Some(parts.join("; "))
             }
         }
         _ => None,

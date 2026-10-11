@@ -483,3 +483,77 @@ async fn edit_against_fal_format_fails_before_any_request() {
         mock.requests()
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn fal_engine_saves_image_through_the_shared_pipeline() {
+    // D-36's checkable property end to end: the request carries the fal keys and
+    // no OpenAI images-API key but `prompt`; D-27's: the response maps onto
+    // `ImageGenerationResponse`, so the unchanged save path writes it.
+    let mock = MockServer::start().await;
+    mock.set_fal_mode(common::FalMode::Url { count: 1 });
+    let out = TempDir::new().unwrap();
+    let out_path = out.path().to_path_buf();
+
+    let settings = Settings {
+        output_dir: out_path.clone(),
+        default_engine: Some("fal".to_string()),
+        engines: HashMap::from([(
+            "fal".to_string(),
+            EngineConfig {
+                api_key: "test".to_string(),
+                base_url: Some(mock.base_url()),
+                model: Some("fal-ai/flux/schnell".to_string()),
+                format: Some("fal".to_string()),
+            },
+        )]),
+    };
+
+    let request = ImageGenerationRequest {
+        prompt: "a fal cat".to_string(),
+        engine: "fal".to_string(),
+        ..Default::default()
+    };
+
+    let results = generate_image_core(&request, &settings).await;
+    assert_eq!(results.len(), 1);
+    assert!(
+        results[0].error.is_none(),
+        "no error: {:?}",
+        results[0].error
+    );
+    let saved = results[0].saved_path.as_ref().expect("saved path");
+    let saved = Path::new(saved);
+
+    // D-27: the unchanged save path wrote the PNG lineage metadata itself.
+    let bytes = std::fs::read(saved).expect("read saved png");
+    assert!(
+        bytes.starts_with(&[0x89, b'P', b'N', b'G']),
+        "PNG magic bytes"
+    );
+    let has_chunk = |needle: &[u8]| bytes.windows(needle.len()).any(|w| w == needle);
+    assert!(has_chunk(b"tEXt"), "PNG tEXt chunks written");
+    assert!(has_chunk(b"a fal cat"), "prompt recorded");
+    assert!(has_chunk(b"fal-ai/flux/schnell"), "model recorded");
+
+    // The model id is a URL path, not a body key.
+    assert_eq!(mock.requests_for("fal-ai/flux/schnell").len(), 1);
+    assert!(mock.requests_for("/v1/images/generations").is_empty());
+
+    let body = &mock.requests_for("fal-ai/flux/schnell")[0];
+    assert_eq!(body["prompt"], "a fal cat");
+    assert_eq!(body["num_images"], 1);
+    assert_eq!(body["image_size"], "square_hd");
+    assert_eq!(body["output_format"], "png");
+    for openai_key in ["model", "n", "size", "response_format", "quality", "style"] {
+        assert!(
+            body.get(openai_key).is_none(),
+            "no OpenAI images-API key '{openai_key}' in {body}"
+        );
+    }
+
+    // D-36/T-03-04: the auth scheme is `Key`, not a bearer token.
+    assert_eq!(
+        mock.auth_for("fal-ai/flux/schnell"),
+        vec!["Key test".to_string()]
+    );
+}

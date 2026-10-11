@@ -35,18 +35,41 @@ pub enum ChatMode {
     Image,
 }
 
+/// Behavior of the fal endpoint, `/{model_id}`.
+#[derive(Clone, Debug)]
+pub enum FalMode {
+    /// Return `count` fal-shaped `images` entries pointing back at this mock.
+    Url { count: usize },
+    /// Return `count` fal-shaped `images` entries as `data:` URIs.
+    DataUri { count: usize },
+    /// Return an HTTP error carrying a fal `detail` body (string or array).
+    Error {
+        status: u16,
+        detail: serde_json::Value,
+    },
+    /// Return a raw, unparseable body with status 200.
+    Unparseable { body: String },
+}
+
 /// Raw request bytes captured per path, for multipart wire-format assertions.
 type RawCaptured = Arc<Mutex<Vec<(String, Vec<u8>)>>>;
+
+/// Authorization values captured per path, so an adapter's auth scheme is
+/// asserted rather than assumed.
+type AuthCaptured = Arc<Mutex<Vec<(String, String)>>>;
 
 #[derive(Clone)]
 pub struct MockState {
     pub addr: String,
     pub images_mode: Arc<Mutex<ImagesMode>>,
     pub chat_mode: Arc<Mutex<ChatMode>>,
+    pub fal_mode: Arc<Mutex<FalMode>>,
     pub captured: Arc<Mutex<Vec<(String, Value)>>>,
     /// Raw request bytes, so multipart wire-format assertions are possible
     /// without adding a multipart parser.
     pub raw: RawCaptured,
+    /// `Authorization` header per request path.
+    pub auth: AuthCaptured,
 }
 
 /// An OpenAI-compatible mock server bound to an ephemeral port. Routes are
@@ -70,8 +93,10 @@ impl MockServer {
             chat_mode: Arc::new(Mutex::new(ChatMode::Text {
                 content: "mock_filename".to_string(),
             })),
+            fal_mode: Arc::new(Mutex::new(FalMode::Url { count: 1 })),
             captured: Arc::new(Mutex::new(Vec::new())),
             raw: Arc::new(Mutex::new(Vec::new())),
+            auth: Arc::new(Mutex::new(Vec::new())),
         };
         let app = Router::new()
             .route("/{*path}", any(dispatch))
@@ -93,6 +118,22 @@ impl MockServer {
 
     pub fn set_chat_mode(&self, mode: ChatMode) {
         *self.state.chat_mode.lock().unwrap() = mode;
+    }
+
+    pub fn set_fal_mode(&self, mode: FalMode) {
+        *self.state.fal_mode.lock().unwrap() = mode;
+    }
+
+    /// All `Authorization` header values captured for a path containing `path`.
+    pub fn auth_for(&self, path: &str) -> Vec<String> {
+        self.state
+            .auth
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(p, _)| p.contains(path))
+            .map(|(_, a)| a.clone())
+            .collect()
     }
 
     /// All requests captured so far as `(path, json_body)`.
@@ -126,6 +167,7 @@ async fn dispatch(
     State(state): State<MockState>,
     method: Method,
     uri: Uri,
+    headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
     let path = uri.path().to_string();
@@ -138,7 +180,18 @@ async fn dispatch(
         .lock()
         .unwrap()
         .push((path.clone(), body.to_vec()));
+    state.auth.lock().unwrap().push((
+        path.clone(),
+        headers
+            .get(header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_string(),
+    ));
 
+    if path.contains("fal-ai") {
+        return fal_logic(state, &uri).await;
+    }
     if path.contains("images/edits") {
         return images_logic(state, &uri).await;
     }
@@ -216,6 +269,46 @@ async fn chat_logic(state: MockState) -> Response {
             "usage": {"total_tokens": 42}
         }))
         .into_response(),
+    }
+}
+
+/// The fal adapter's endpoint family: `POST {base}/{model_id}`. The response is
+/// the documented `images` shape — no `data`, no `b64_json`, no top-level `url`
+/// (D-36). Only the `Url` arm is exercised by the tracer; the rest are filled
+/// in by 03-02 Task 3.
+async fn fal_logic(state: MockState, uri: &Uri) -> Response {
+    let host = uri
+        .authority()
+        .map(|a| a.to_string())
+        .unwrap_or_else(|| state.addr.clone());
+    let mode = state.fal_mode.lock().unwrap().clone();
+    match mode {
+        FalMode::Url { count } => {
+            let images: Vec<Value> = (0..count)
+                .map(|i| {
+                    json!({"url": format!("http://{host}/img/{i}.png"), "content_type": "image/png"})
+                })
+                .collect();
+            Json(json!({"images": images, "prompt": "a fal cat", "seed": 7, "timings": {"inference": 0.4}}))
+                .into_response()
+        }
+        FalMode::DataUri { count } => {
+            let images: Vec<Value> = (0..count)
+                .map(|_| {
+                    json!({
+                        "url": format!("data:image/png;base64,{PIXEL_PNG_B64}"),
+                        "content_type": "image/png"
+                    })
+                })
+                .collect();
+            Json(json!({"images": images, "prompt": "a fal cat", "seed": 7})).into_response()
+        }
+        FalMode::Error { status, detail } => (
+            StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_REQUEST),
+            Json(json!({"detail": detail})),
+        )
+            .into_response(),
+        FalMode::Unparseable { body } => (StatusCode::OK, body).into_response(),
     }
 }
 

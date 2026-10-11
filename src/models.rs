@@ -130,6 +130,26 @@ pub struct ModelInfo {
     pub model: Option<String>,
 }
 
+/// The fal.ai `POST {base}/{model_id}` response.
+///
+/// Deliberately carries **no** OpenAI key: there is no `data`, no `b64_json` and
+/// no top-level `url` — that absence is D-36's checkable property, so it is
+/// stated here where the next reader looks for the response shape.
+#[derive(Debug, Deserialize)]
+pub struct FalImagesResponse {
+    #[serde(default)]
+    pub images: Vec<FalImage>,
+}
+
+/// One fal result image.
+#[derive(Debug, Deserialize)]
+pub struct FalImage {
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub content_type: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
