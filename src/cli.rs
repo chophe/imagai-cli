@@ -726,9 +726,13 @@ async fn cmd_list_engines(all: bool, settings: &Settings) -> anyhow::Result<()> 
     }
 
     println!("{}", "⚙️ Configured Imagai Engines".bold());
+    // D-32's column order: name, format, model, base_url — with the existing
+    // key-status column kept last rather than dropped, because losing the
+    // key-status signal would be a regression in information, not a
+    // simplification.
     let header = format!(
-        "{:<24} {:<16} {:<34} {:<28}",
-        "Engine Name", "API Key Set", "Base URL", "Default Model"
+        "{:<24} {:<12} {:<34} {:<28} {:<22}",
+        "Engine Name", "Format", "Default Model", "Base URL", "API Key Set"
     )
     .bold()
     .underline();
@@ -748,12 +752,17 @@ async fn cmd_list_engines(all: bool, settings: &Settings) -> anyhow::Result<()> 
             .model
             .clone()
             .unwrap_or_else(|| "Not specified".to_string());
+        // The one display helper the TUI and the web `/api/engines` response
+        // also call, so the three surfaces cannot drift. A broken declaration
+        // shows its raw value here rather than a resolved default (D-24).
+        let format = crate::formats::ProviderFormat::format_label(cfg).magenta();
         println!(
-            "{:<24} {:<16} {:<34} {:<28}",
+            "{:<24} {:<12} {:<34} {:<28} {:<22}",
             name.cyan(),
-            key_status,
+            format,
+            model.yellow(),
             base_url.green(),
-            model.yellow()
+            key_status
         );
     }
 

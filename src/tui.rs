@@ -1642,16 +1642,24 @@ impl App {
         }
     }
 
-    fn draw_engines_tab(&mut self, frame: &mut Frame, area: Rect) {
-        let mut lines: Vec<Line> = Vec::new();
+    /// The Engines tab's table lines: the header row plus one row per
+    /// configured engine. Extracted so the rows have one source and can be
+    /// asserted directly — `draw_engines_tab` renders exactly what this returns.
+    ///
+    /// The format cell comes from the same `crate::formats` helper `cmd_list_engines`
+    /// and the web `/api/engines` response use, so the three surfaces cannot
+    /// drift (D-32, D-34).
+    fn engine_rows(&self) -> Vec<Line<'static>> {
+        // The same five columns and widths as the CLI table, sized for a
+        // terminal, so the two surfaces agree.
         let header = format!(
-            "{:<22} {:<14} {:<30} {:<24}",
-            "Engine Name", "API Key Set", "Base URL", "Default Model"
+            "{:<20} {:<10} {:<30} {:<26} {:<14}",
+            "Engine Name", "Format", "Default Model", "Base URL", "API Key Set"
         );
-        lines.push(Line::from(Span::styled(
+        let mut lines = vec![Line::from(Span::styled(
             header,
             Style::default().add_modifier(Modifier::BOLD).underlined(),
-        )));
+        ))];
 
         let names = self.settings.engine_names();
         if names.is_empty() {
@@ -1659,46 +1667,48 @@ impl App {
                 "No engines configured. Check your .env file.",
                 Style::default().fg(Color::Yellow),
             )));
-        } else {
-            for name in names {
-                let cfg = &self.settings.engines[&name];
-                let key_status = if cfg.key_set() {
-                    "✅ Set"
-                } else {
-                    "⚠️ Not Set"
-                };
-                let base_url = cfg
-                    .base_url
-                    .clone()
-                    .unwrap_or_else(|| "N/A (Official OpenAI)".to_string());
-                let model = cfg
-                    .model
-                    .clone()
-                    .unwrap_or_else(|| "Not specified".to_string());
-                let row = format!(
-                    "{:<22} {:<14} {:<30} {:<24}",
-                    name, key_status, base_url, model
-                );
-                let mut spans = Vec::new();
-                // color columns
-                let name_style = Style::default().fg(Color::Cyan);
-                let key_style = if cfg.key_set() {
-                    Style::default().fg(Color::Green)
-                } else {
-                    Style::default().fg(Color::Yellow)
-                };
-                spans.push(Span::styled(format!("{:<22}", name), name_style));
-                spans.push(Span::styled(format!("{:<14}", key_status), key_style));
-                spans.push(Span::styled(
-                    format!("{:<30}", base_url),
-                    Style::default().fg(Color::Green),
-                ));
-                spans.push(Span::styled(model, Style::default().fg(Color::Yellow)));
-                lines.push(Line::from(spans));
-                let _ = row;
-            }
+            return lines;
         }
 
+        for name in names {
+            let cfg = &self.settings.engines[&name];
+            let key_status = if cfg.key_set() {
+                "✅ Set"
+            } else {
+                "⚠️ Not Set"
+            };
+            let base_url = cfg
+                .base_url
+                .clone()
+                .unwrap_or_else(|| "N/A (Official OpenAI)".to_string());
+            let model = cfg
+                .model
+                .clone()
+                .unwrap_or_else(|| "Not specified".to_string());
+            let name_style = Style::default().fg(Color::Cyan);
+            let key_style = if cfg.key_set() {
+                Style::default().fg(Color::Green)
+            } else {
+                Style::default().fg(Color::Yellow)
+            };
+            let spans = vec![
+                Span::styled(format!("{name:<20}"), name_style),
+                // Display-only per D-34: no filter, no format selector.
+                Span::styled(
+                    format!("{:<10}", crate::formats::ProviderFormat::format_label(cfg)),
+                    Style::default().fg(Color::Magenta),
+                ),
+                Span::styled(format!("{model:<30}"), Style::default().fg(Color::Yellow)),
+                Span::styled(format!("{base_url:<26}"), Style::default().fg(Color::Green)),
+                Span::styled(format!("{key_status:<14}"), key_style),
+            ];
+            lines.push(Line::from(spans));
+        }
+        lines
+    }
+
+    fn draw_engines_tab(&mut self, frame: &mut Frame, area: Rect) {
+        let mut lines = self.engine_rows();
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             "Press 'f' to fetch available models for engines with a configured key.",
@@ -2096,6 +2106,65 @@ mod tests {
     fn edit_row_labels_name_the_edit_fields() {
         let labels: Vec<_> = (0..EDIT_ROWS).map(App::edit_row_label).collect();
         assert_eq!(labels, vec!["Source", "Change", "Engine", "Output", "Edit"]);
+    }
+
+    #[test]
+    fn engines_tab_rows_name_the_format_column() {
+        let tmp = TempDir::new().unwrap();
+        let settings = Settings {
+            output_dir: tmp.path().to_path_buf(),
+            default_engine: Some("mock".to_string()),
+            engines: HashMap::from([
+                (
+                    "mock".to_string(),
+                    crate::config::EngineConfig {
+                        api_key: "test".to_string(),
+                        base_url: None,
+                        model: Some("dall-e-3".to_string()),
+                        format: None,
+                    },
+                ),
+                (
+                    "fal".to_string(),
+                    crate::config::EngineConfig {
+                        api_key: "test".to_string(),
+                        base_url: None,
+                        model: Some("fal-ai/flux/schnell".to_string()),
+                        format: Some("fal".to_string()),
+                    },
+                ),
+            ]),
+        };
+        let app = App::new(&settings);
+        let rows: Vec<String> = app.engine_rows().iter().map(line_text).collect();
+        assert!(
+            rows[0].contains("Format"),
+            "header names the column: {rows:?}"
+        );
+        // `engine_names()` is sorted, so match by engine name rather than by a
+        // fixed index.
+        let mock_row = rows
+            .iter()
+            .find(|r| r.starts_with("mock"))
+            .expect("the mock engine is listed");
+        assert!(
+            mock_row.contains("openai"),
+            "an undeclared engine reads openai: {rows:?}"
+        );
+        let fal_row = rows
+            .iter()
+            .find(|r| r.starts_with("fal"))
+            .expect("the fal engine is listed");
+        assert!(
+            fal_row.contains("fal"),
+            "a declared engine reads fal: {rows:?}"
+        );
+    }
+
+    /// Plain text of a rendered `Line`, so built rows can be asserted through
+    /// their spans rather than a reconstructed string.
+    fn line_text(line: &Line<'static>) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
     }
 
     /// Plain text of a history row, so the built lines can be asserted.

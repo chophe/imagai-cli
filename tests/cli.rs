@@ -114,6 +114,10 @@ async fn list_engines_shows_configured_engines() {
     cmd(&mock, out.path())
         .env("IMAGAI__ENGINES__MOCK2__API_KEY", "test-key")
         .env("IMAGAI__ENGINES__MOCK2__MODEL", "gpt-image-1")
+        .env("IMAGAI__ENGINES__MOCK3__API_KEY", "test-key")
+        .env("IMAGAI__ENGINES__MOCK3__MODEL", "fal-ai/flux/schnell")
+        .env("IMAGAI__ENGINES__MOCK3__BASE_URL", "http://127.0.0.1:9/fal")
+        .env("IMAGAI__ENGINES__MOCK3__FORMAT", "fal")
         .arg("list-engines")
         .assert()
         .success()
@@ -121,7 +125,26 @@ async fn list_engines_shows_configured_engines() {
         .stdout(predicate::str::contains("mock2"))
         .stdout(predicate::str::contains("✅ Set"))
         .stdout(predicate::str::contains("dall-e-3"))
-        .stdout(predicate::str::contains("gpt-image-1"));
+        .stdout(predicate::str::contains("gpt-image-1"))
+        // D-32: the format column names the declared format beside the name.
+        .stdout(predicate::str::contains("Format"))
+        .stdout(predicate::str::contains("openai"))
+        .stdout(predicate::str::contains("fal"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn list_engines_shows_a_broken_format_declaration_verbatim() {
+    let mock = MockServer::start().await;
+    let out = TempDir::new().unwrap();
+    cmd(&mock, out.path())
+        .env("IMAGAI__ENGINES__MOCK4__FORMAT", "bogus")
+        .arg("list-engines")
+        .assert()
+        .success()
+        // D-24/T-03-09: the typo is visible in discovery rather than hidden
+        // behind a resolved default.
+        .stdout(predicate::str::contains("Format"))
+        .stdout(predicate::str::contains("bogus"));
 }
 
 #[tokio::test(flavor = "multi_thread")]
