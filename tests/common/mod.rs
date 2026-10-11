@@ -43,9 +43,11 @@ pub enum FalMode {
     /// Return `count` fal-shaped `images` entries as `data:` URIs.
     DataUri { count: usize },
     /// Return an HTTP error carrying a fal `detail` body (string or array).
+    /// `error_type` is fal's flat infrastructure-failure companion to `detail`.
     Error {
         status: u16,
         detail: serde_json::Value,
+        error_type: Option<String>,
     },
     /// Return a raw, unparseable body with status 200.
     Unparseable { body: String },
@@ -303,11 +305,21 @@ async fn fal_logic(state: MockState, uri: &Uri) -> Response {
                 .collect();
             Json(json!({"images": images, "prompt": "a fal cat", "seed": 7})).into_response()
         }
-        FalMode::Error { status, detail } => (
-            StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_REQUEST),
-            Json(json!({"detail": detail})),
-        )
-            .into_response(),
+        FalMode::Error {
+            status,
+            detail,
+            error_type,
+        } => {
+            let mut body = json!({"detail": detail});
+            if let Some(t) = error_type {
+                body["error_type"] = json!(t);
+            }
+            (
+                StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_REQUEST),
+                Json(body),
+            )
+                .into_response()
+        }
         FalMode::Unparseable { body } => (StatusCode::OK, body).into_response(),
     }
 }

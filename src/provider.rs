@@ -552,7 +552,11 @@ fn build_fal_images_body(request: &ImageGenerationRequest) -> anyhow::Result<ser
     }
     body["prompt"] = json!(request.prompt);
     body["num_images"] = json!(request.n.max(1));
-    body["image_size"] = json!(fal_image_size(&request.engine, &request.size)?);
+    // Absent entirely when the request carries no size, so a size-less request
+    // does not fail against the adapter's three-entry enum.
+    if !request.size.is_empty() {
+        body["image_size"] = json!(fal_image_size(&request.engine, &request.size)?);
+    }
     body["output_format"] = json!("png");
     Ok(body)
 }
@@ -1035,6 +1039,79 @@ mod tests {
         assert!(body.get("n").is_none());
         // No size drop unless aspect_ratio given.
         assert_eq!(body["size"], "1024x1024");
+    }
+
+    #[test]
+    fn fal_body_carries_only_fal_keys() {
+        let body =
+            build_fal_images_body(&request_with_extra(HashMap::new())).expect("fal body builds");
+        assert_eq!(body["prompt"], "a cat");
+        assert_eq!(body["num_images"], 2);
+        assert_eq!(body["image_size"], "square_hd");
+        assert_eq!(body["output_format"], "png");
+        // D-36: no OpenAI images-API key may appear.
+        for openai_key in ["model", "n", "size", "response_format", "quality", "style"] {
+            assert!(
+                body.get(openai_key).is_none(),
+                "unexpected OpenAI key '{openai_key}' in {body}"
+            );
+        }
+    }
+
+    #[test]
+    fn fal_body_bails_on_an_unmapped_size() {
+        let req = ImageGenerationRequest {
+            size: "512x512".to_string(),
+            ..request_with_extra(HashMap::new())
+        };
+        let err = build_fal_images_body(&req).unwrap_err().to_string();
+        assert!(err.contains("mock"), "names the engine: {err}");
+        assert!(err.contains("512x512"), "names the rejected size: {err}");
+        for supported in ["1024x1024", "1024x1792", "1792x1024"] {
+            assert!(err.contains(supported), "lists {supported}: {err}");
+        }
+    }
+
+    #[test]
+    fn fal_body_merges_extra_params_unchanged() {
+        // D-31: the escape hatch is identical for both families.
+        let mut extra = HashMap::new();
+        extra.insert("seed".into(), json!(42));
+        extra.insert("guidance_scale".into(), json!(3.5));
+        let body = build_fal_images_body(&request_with_extra(extra)).expect("fal body builds");
+        assert_eq!(body["seed"], 42);
+        assert_eq!(body["guidance_scale"], 3.5);
+    }
+
+    #[test]
+    fn fal_body_keeps_png_output_format_over_an_override() {
+        // The shared save path writes PNG metadata, so the adapter's own key
+        // wins even when an operator tries to override it (D-27, T-03-07).
+        let mut extra = HashMap::new();
+        extra.insert("output_format".into(), json!("jpeg"));
+        let body = build_fal_images_body(&request_with_extra(extra)).expect("fal body builds");
+        assert_eq!(body["output_format"], "png");
+    }
+
+    #[test]
+    fn fal_body_omits_image_size_for_an_empty_size() {
+        let req = ImageGenerationRequest {
+            size: String::new(),
+            ..request_with_extra(HashMap::new())
+        };
+        let body = build_fal_images_body(&req).expect("fal body builds");
+        assert!(body.get("image_size").is_none(), "{body}");
+        assert_eq!(body["num_images"], 2);
+    }
+
+    #[test]
+    fn fal_body_clamps_a_zero_count_up_to_one() {
+        let req = ImageGenerationRequest {
+            n: 0,
+            ..request_with_extra(HashMap::new())
+        };
+        let body = build_fal_images_body(&req).expect("fal body builds");
+        assert_eq!(body["num_images"], 1);
     }
 
     #[test]

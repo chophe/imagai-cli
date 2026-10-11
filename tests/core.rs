@@ -557,3 +557,196 @@ async fn fal_engine_saves_image_through_the_shared_pipeline() {
         vec!["Key test".to_string()]
     );
 }
+
+/// A fal engine carrying an API key, a model and a format, pointed at the mock.
+fn fal_settings(mock: &MockServer, out_path: &std::path::Path) -> Settings {
+    Settings {
+        output_dir: out_path.to_path_buf(),
+        default_engine: Some("fal".to_string()),
+        engines: HashMap::from([(
+            "fal".to_string(),
+            EngineConfig {
+                api_key: "test".to_string(),
+                base_url: Some(mock.base_url()),
+                model: Some("fal-ai/flux/schnell".to_string()),
+                format: Some("fal".to_string()),
+            },
+        )]),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn fal_data_uri_response_saves_without_a_fetch() {
+    let mock = MockServer::start().await;
+    mock.set_fal_mode(common::FalMode::DataUri { count: 1 });
+    let out = TempDir::new().unwrap();
+    let settings = fal_settings(&mock, out.path());
+
+    let request = ImageGenerationRequest {
+        prompt: "a fal cat".to_string(),
+        engine: "fal".to_string(),
+        ..Default::default()
+    };
+
+    let results = generate_image_core(&request, &settings).await;
+    assert_eq!(results.len(), 1);
+    assert!(results[0].error.is_none(), "{:?}", results[0].error);
+    assert!(results[0].saved_path.is_some());
+    assert_eq!(mock.requests_for("fal-ai/flux/schnell").len(), 1);
+    assert!(
+        mock.requests_for("/img/").is_empty(),
+        "the data URI carries the bytes; no fetch is made: {:?}",
+        mock.requests_for("/img/")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn fal_flat_error_body_is_mapped_into_the_envelope() {
+    let mock = MockServer::start().await;
+    mock.set_fal_mode(common::FalMode::Error {
+        status: 504,
+        detail: serde_json::json!("Request timed out"),
+        error_type: Some("request_timeout".to_string()),
+    });
+    let out = TempDir::new().unwrap();
+    let settings = fal_settings(&mock, out.path());
+
+    let request = ImageGenerationRequest {
+        prompt: "a fal cat".to_string(),
+        engine: "fal".to_string(),
+        ..Default::default()
+    };
+
+    let results = generate_image_core(&request, &settings).await;
+    assert_eq!(results.len(), 1);
+    let err = results[0].error.as_deref().expect("error message");
+    assert!(err.contains("fal"), "names the engine: {err}");
+    assert!(err.contains("Request timed out"), "{err}");
+    assert!(
+        err.contains("request_timeout"),
+        "the error_type travels too: {err}"
+    );
+    assert!(err.contains("504"), "the HTTP status travels too: {err}");
+    assert!(results[0].saved_path.is_none(), "no phantom save");
+    assert!(mock.requests_for("/img/").is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn fal_detail_array_error_body_is_mapped_into_the_envelope() {
+    let mock = MockServer::start().await;
+    mock.set_fal_mode(common::FalMode::Error {
+        status: 422,
+        detail: serde_json::json!([
+            {"loc": ["body", "prompt"], "msg": "Field 'prompt' is required but was not provided.", "type": "missing"},
+            {"loc": ["body", "seed"], "msg": "Input should be a valid integer", "type": "int_parsing"}
+        ]),
+        error_type: None,
+    });
+    let out = TempDir::new().unwrap();
+    let settings = fal_settings(&mock, out.path());
+
+    let request = ImageGenerationRequest {
+        prompt: "a fal cat".to_string(),
+        engine: "fal".to_string(),
+        ..Default::default()
+    };
+
+    let results = generate_image_core(&request, &settings).await;
+    assert_eq!(results.len(), 1);
+    let err = results[0].error.as_deref().expect("error message");
+    assert!(
+        err.contains("Field 'prompt' is required but was not provided."),
+        "{err}"
+    );
+    assert!(err.contains("missing"), "{err}");
+    assert!(err.contains("Input should be a valid integer"), "{err}");
+    assert!(err.contains("int_parsing"), "{err}");
+    assert!(err.contains("422"), "{err}");
+    assert!(results[0].saved_path.is_none(), "no phantom save");
+    assert!(mock.requests_for("/img/").is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn fal_error_body_without_detail_falls_back_to_the_raw_body() {
+    // D-37: a body with no usable `detail` falls back to best-effort raw body
+    // with the status — never a panic, never a silent success.
+    let mock = MockServer::start().await;
+    mock.set_fal_mode(common::FalMode::Error {
+        status: 500,
+        detail: serde_json::json!(null),
+        error_type: None,
+    });
+    let out = TempDir::new().unwrap();
+    let settings = fal_settings(&mock, out.path());
+
+    let request = ImageGenerationRequest {
+        prompt: "a fal cat".to_string(),
+        engine: "fal".to_string(),
+        ..Default::default()
+    };
+
+    let results = generate_image_core(&request, &settings).await;
+    assert_eq!(results.len(), 1);
+    let err = results[0].error.as_deref().expect("error message");
+    assert!(err.contains("fal"), "{err}");
+    assert!(err.contains("500"), "the status travels: {err}");
+    assert!(
+        err.contains("null") || err.contains("detail") || err.contains('{'),
+        "the truncated raw body travels: {err}"
+    );
+    assert!(results[0].saved_path.is_none(), "no phantom save");
+    assert!(mock.requests_for("/img/").is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn fal_unparseable_success_response_bails_naming_engine_status_and_body() {
+    let mock = MockServer::start().await;
+    mock.set_fal_mode(common::FalMode::Unparseable {
+        body: "<html>gateway</html>".to_string(),
+    });
+    let out = TempDir::new().unwrap();
+    let settings = fal_settings(&mock, out.path());
+
+    let request = ImageGenerationRequest {
+        prompt: "a fal cat".to_string(),
+        engine: "fal".to_string(),
+        ..Default::default()
+    };
+
+    let results = generate_image_core(&request, &settings).await;
+    assert_eq!(results.len(), 1);
+    let err = results[0].error.as_deref().expect("error message");
+    assert!(err.contains("fal"), "names the engine: {err}");
+    assert!(err.contains("200"), "names the HTTP status: {err}");
+    assert!(err.contains("unparseable"), "{err}");
+    assert!(
+        err.contains("<html>gateway</html>"),
+        "carries the body prefix: {err}"
+    );
+    assert!(results[0].saved_path.is_none(), "no phantom save");
+    assert!(mock.requests_for("/img/").is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn fal_empty_images_list_reports_no_images() {
+    let mock = MockServer::start().await;
+    mock.set_fal_mode(common::FalMode::Url { count: 0 });
+    let out = TempDir::new().unwrap();
+    let settings = fal_settings(&mock, out.path());
+
+    let request = ImageGenerationRequest {
+        prompt: "a fal cat".to_string(),
+        engine: "fal".to_string(),
+        ..Default::default()
+    };
+
+    let results = generate_image_core(&request, &settings).await;
+    assert_eq!(results.len(), 1);
+    assert_eq!(
+        results[0].error.as_deref(),
+        Some("API returned no images."),
+        "the existing sentence, unchanged"
+    );
+    assert!(results[0].saved_path.is_none(), "no phantom save");
+    assert!(mock.requests_for("/img/").is_empty());
+}
