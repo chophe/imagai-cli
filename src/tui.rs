@@ -10,7 +10,7 @@ use ratatui::DefaultTerminal;
 use ratatui::Frame;
 use tokio::sync::mpsc;
 
-use crate::config::Settings;
+use crate::config::{EngineConfig, Settings};
 use crate::core::generate_image_core;
 use crate::history::{self, MAX_TREE_DEPTH};
 use crate::models::ImageGenerationRequest;
@@ -1767,11 +1767,15 @@ impl App {
         if self.fetching_models {
             return;
         }
-        let mut engines: Vec<(String, Option<String>, String)> = Vec::new();
+        let mut engines: Vec<(String, EngineConfig)> = Vec::new();
         for name in self.settings.engine_names() {
             let cfg = &self.settings.engines[&name];
             if cfg.key_set() {
-                engines.push((name.clone(), cfg.base_url.clone(), cfg.api_key.clone()));
+                // The declaration travels with the config: `fetch_models`
+                // resolves it and refuses a format that has no listing endpoint,
+                // so a key is never addressed to a host the operator did not set
+                // (BLOCKER-2).
+                engines.push((name.clone(), cfg.clone()));
             }
         }
         if engines.is_empty() {
@@ -1788,8 +1792,8 @@ impl App {
         let (tx, rx) = mpsc::unbounded_channel::<Vec<(String, Result<Vec<String>, String>)>>();
         tokio::spawn(async move {
             let mut all = Vec::new();
-            for (name, base_url, api_key) in engines {
-                let r = crate::provider::fetch_models(base_url.as_deref(), &api_key).await;
+            for (name, cfg) in engines {
+                let r = crate::provider::fetch_models(&name, &cfg).await;
                 all.push((name, r.map_err(|e| e.to_string())));
             }
             let _ = tx.send(all);

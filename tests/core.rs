@@ -848,3 +848,55 @@ async fn fal_empty_images_list_reports_no_images() {
     assert!(results[0].saved_path.is_none(), "no phantom save");
     assert!(mock.requests_for("/img/").is_empty());
 }
+
+// ---- fal model discovery
+
+#[tokio::test(flavor = "multi_thread")]
+async fn fal_engine_discovery_is_refused_even_with_a_reachable_host() {
+    // BLOCKER-2, end to end: discovery is gated on the format, not on the
+    // address, so a fal engine pointed at a live listing-shaped endpoint still
+    // spends no request. The empty request set is the proof; the operator gets
+    // one line naming the engine and the reason, so a failed engine still costs
+    // one `[error]` line and the loop continues (T-03-11).
+    let mock = MockServer::start().await;
+    let cfg = EngineConfig {
+        api_key: "fal-secret-key-123".to_string(),
+        base_url: Some(mock.base_url()),
+        model: Some("fal-ai/flux/schnell".to_string()),
+        format: Some("fal".to_string()),
+    };
+
+    let err = imagai::provider::fetch_models("fal", &cfg)
+        .await
+        .expect_err("a generation-only format has no model list to fetch");
+    let err = err.to_string();
+    assert!(err.contains("fal"), "names the engine: {err}");
+    assert!(
+        err.contains("no model list") && err.contains("GET /models"),
+        "states the reason: {err}"
+    );
+    assert!(
+        mock.requests().is_empty(),
+        "no request was spent on a reachable host: {:?}",
+        mock.requests()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn openai_compatible_engine_discovery_is_unchanged() {
+    // The no-regression half: the family that does list models still reaches the
+    // host it is configured with.
+    let mock = MockServer::start().await;
+    let cfg = EngineConfig {
+        api_key: "test".to_string(),
+        base_url: Some(mock.base_url()),
+        model: Some("dall-e-3".to_string()),
+        format: None,
+    };
+
+    let ids = imagai::provider::fetch_models("mock", &cfg)
+        .await
+        .expect("the OpenAI-compatible family still lists models");
+    assert!(ids.contains(&"dall-e-3".to_string()), "{ids:?}");
+    assert_eq!(mock.requests_for("/v1/models").len(), 1);
+}

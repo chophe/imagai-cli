@@ -777,7 +777,13 @@ async fn cmd_list_engines(all: bool, settings: &Settings) -> anyhow::Result<()> 
             );
             continue;
         }
-        match crate::provider::fetch_models(cfg.base_url.as_deref(), &cfg.api_key).await {
+        // The engine name and its config travel together: `fetch_models`
+        // resolves the declared format and refuses a family that has no listing
+        // endpoint, so a configured fal key is never addressed to a host the
+        // operator did not set (BLOCKER-2). The per-engine `Err` arm below is
+        // unchanged, so one failed engine still costs one line and the loop
+        // continues (T-03-11).
+        match crate::provider::fetch_models(&name, cfg).await {
             Ok(mut ids) => {
                 if !all {
                     ids.retain(|m| is_image_model(m));

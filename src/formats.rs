@@ -64,6 +64,30 @@ impl ProviderFormat {
         matches!(self, Self::OpenAiCompatible)
     }
 
+    /// Whether this format family exposes a model list to discover.
+    ///
+    /// The OpenAI-compatible family does (`GET {base}/models`); the
+    /// generation-only format does not — it names its model by URL path, so
+    /// there is no listing endpoint to call. That matters for more than the 404
+    /// it would produce: with no listing to fetch there is also no host a
+    /// credential could safely be sent to, which is why discovery is gated here
+    /// rather than defaulted (BLOCKER-2).
+    pub fn supports_model_list(&self) -> bool {
+        matches!(self, Self::OpenAiCompatible)
+    }
+
+    /// The host this format's requests go to when `BASE_URL` is unset.
+    ///
+    /// A property of the format rather than a string duplicated at each fallback
+    /// site, so the fal family's default (`fal.run`) sits beside the
+    /// OpenAI-compatible default instead of being re-derived per caller.
+    pub fn default_host(&self) -> &'static str {
+        match self {
+            Self::OpenAiCompatible => "https://api.openai.com/v1",
+            Self::Fal => "https://fal.run",
+        }
+    }
+
     /// Resolve the format an engine's requests will be built with.
     ///
     /// Precedence is D-29's: a trimmed, non-empty declared value must be a

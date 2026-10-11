@@ -19,13 +19,28 @@ pub fn http_client() -> anyhow::Result<reqwest::Client> {
 }
 
 /// Fetch the list of model ids exposed by an OpenAI-compatible `{base}/models`.
-pub async fn fetch_models(base_url: Option<&str>, api_key: &str) -> anyhow::Result<Vec<String>> {
-    let client = http_client()?;
-    let url = match base_url {
-        Some(b) => format!("{}/models", b.trim_end_matches('/')),
-        None => "https://api.openai.com/v1/models".to_string(),
+///
+/// Format-gated (BLOCKER-2): a family with no listing endpoint must not have its
+/// credential addressed to any host on the operator's behalf, so a
+/// generation-only format fails here — naming the engine and stating why —
+/// instead of falling back to the OpenAI-compatible default host. The engine
+/// name and its config travel together so that resolving the declaration is part
+/// of this function and neither caller (the CLI table, the TUI engine browser)
+/// can forget it.
+pub async fn fetch_models(engine: &str, cfg: &EngineConfig) -> anyhow::Result<Vec<String>> {
+    let format = crate::formats::ProviderFormat::resolve(engine, cfg)?;
+    let Some(url) = models_url(cfg.base_url.as_deref(), format) else {
+        anyhow::bail!(
+            "Engine '{engine}' has no model list to fetch: the '{}' format is generation-only and names its model by URL path, so there is no GET /models endpoint to call.",
+            format.as_str()
+        );
     };
-    let resp = client.get(&url).bearer_auth(api_key).send().await?;
+    let client = http_client()?;
+    let resp = client
+        .get(&url)
+        .bearer_auth(cfg.api_key.as_str())
+        .send()
+        .await?;
     let status = resp.status();
     let text = resp.text().await?;
     if !status.is_success() {
@@ -79,6 +94,23 @@ fn resolve_url(base_url: &Option<String>, path: &str) -> String {
         ),
         None => format!("https://api.openai.com/v1/{}", path.trim_start_matches('/')),
     }
+}
+
+/// The discovery URL for a format, or `None` when the format has no listing
+/// endpoint to call at all.
+///
+/// This is the one place a discovery host is chosen, which is what makes the
+/// BLOCKER-2 fix structural rather than a guarded special case: for the
+/// generation-only format there is no URL, so no request — and therefore no
+/// credential — can leave for a host the operator never configured.
+fn models_url(base_url: Option<&str>, format: ProviderFormat) -> Option<String> {
+    if !format.supports_model_list() {
+        return None;
+    }
+    Some(match base_url {
+        Some(b) => format!("{}/models", b.trim_end_matches('/')),
+        None => format!("{}/models", format.default_host()),
+    })
 }
 
 /// Generic OpenAI-compatible chat completion helper.
@@ -533,7 +565,7 @@ fn fal_base_url(config: &EngineConfig) -> Option<String> {
     config
         .base_url
         .clone()
-        .or_else(|| Some("https://fal.run".to_string()))
+        .or_else(|| Some(ProviderFormat::Fal.default_host().to_string()))
 }
 
 /// Build the fal request body.
@@ -1112,6 +1144,60 @@ mod tests {
         };
         let body = build_fal_images_body(&req).expect("fal body builds");
         assert_eq!(body["num_images"], 1);
+    }
+
+    // ---- model discovery (BLOCKER-2)
+
+    #[test]
+    fn a_format_without_a_listing_endpoint_has_no_discovery_url_at_all() {
+        // The executable half of the BLOCKER-2 proof: no URL is constructed for a
+        // generation-only format, so there is no request — and no credential —
+        // that could leave for a host the operator never configured. An assertion
+        // on the request count alone would pass vacuously against a machine with
+        // no network.
+        assert_eq!(models_url(None, ProviderFormat::Fal), None);
+        // A configured BASE_URL does not create one either: the gate is the
+        // format, not the host.
+        assert_eq!(
+            models_url(Some("http://mock/v1"), ProviderFormat::Fal),
+            None
+        );
+    }
+
+    #[test]
+    fn the_openai_compatible_default_host_is_unchanged() {
+        // No regression for the family that does list models, with and without a
+        // configured base.
+        assert_eq!(
+            models_url(None, ProviderFormat::OpenAiCompatible).as_deref(),
+            Some("https://api.openai.com/v1/models")
+        );
+        assert_eq!(
+            models_url(Some("http://mock/v1/"), ProviderFormat::OpenAiCompatible).as_deref(),
+            Some("http://mock/v1/models")
+        );
+    }
+
+    #[test]
+    fn the_fal_default_host_is_fal_run() {
+        // The other half of the same proof: the fal family's own default host is
+        // the one its generator already uses, never OpenAI's.
+        assert_eq!(ProviderFormat::Fal.default_host(), "https://fal.run");
+        assert_ne!(
+            ProviderFormat::Fal.default_host(),
+            ProviderFormat::OpenAiCompatible.default_host()
+        );
+    }
+
+    #[test]
+    fn a_fal_engine_with_a_base_url_still_has_no_listing_to_fetch() {
+        // Locks the gate to the format rather than to the presence of a host:
+        // even a fal engine pointed at a reachable listing-shaped endpoint is
+        // refused, because its model ids are URL paths.
+        assert_eq!(
+            models_url(Some("http://mock/v1/models"), ProviderFormat::Fal),
+            None
+        );
     }
 
     #[test]
