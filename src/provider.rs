@@ -132,7 +132,29 @@ pub enum EditTransport {
 /// `crate::cli::is_image_model`: that heuristic is display-only and `dall-e-3`
 /// passes it while still being unable to take image input.
 pub fn edit_transport(name: &str, cfg: &EngineConfig) -> anyhow::Result<EditTransport> {
+    // The declared format is the source of truth for *which family* may accept
+    // image input (D-30). An unrecognised declared value bails here — before the
+    // capability question, and before any socket exists — so a config typo
+    // fails at request time rather than silently choosing a transport.
+    let format = crate::formats::ProviderFormat::resolve(name, cfg)?;
     let model = cfg.model.clone().unwrap_or_else(|| "dall-e-3".to_string());
+
+    // D-26/D-30: a generation-only format cannot take image input at all, so
+    // there is no transport to choose. The leading clause is the existing
+    // refusal sentence verbatim so one grammar covers every refusal.
+    if !format.supports_image_input() {
+        anyhow::bail!(
+            "Engine '{name}' (model '{model}') cannot accept image input for edits: the '{}' format is generation-only in this version. \
+             Set IMAGAI__ENGINES__<NAME>__MODEL to a gpt-image model, or point BASE_URL at an \
+             OpenRouter vision engine.",
+            format.as_str()
+        )
+    }
+
+    // Within the OpenAI-compatible family the model matching below picks the
+    // transport, exactly as it did before this phase — D-28 keeps the
+    // within-family sniffing; D-30 replaces only the name/model gate as the
+    // source of truth for the new family.
     let is_openrouter = cfg
         .base_url
         .as_deref()
@@ -739,6 +761,7 @@ mod tests {
             api_key: "sk".to_string(),
             base_url: Some("http://mock/v1".to_string()),
             model: Some("dall-e-3".to_string()),
+            format: None,
         }
     }
 
@@ -864,6 +887,52 @@ mod tests {
         assert!(err.contains("my_stability_engine"), "{err}");
         assert!(err.contains("stability.sd3-large"), "{err}");
         assert!(err.contains("cannot accept image input for edits"), "{err}");
+    }
+
+    #[test]
+    fn edit_transport_refuses_the_generation_only_fal_format() {
+        let cfg = EngineConfig {
+            model: Some("fal-ai/flux/schnell".to_string()),
+            format: Some("fal".to_string()),
+            ..dalle_config()
+        };
+        let err = edit_transport("fal_engine", &cfg).unwrap_err().to_string();
+        assert!(err.contains("fal_engine"), "{err}");
+        assert!(err.contains("fal-ai/flux/schnell"), "{err}");
+        assert!(err.contains("fal"), "{err}");
+        assert!(err.contains("cannot accept image input for edits"), "{err}");
+    }
+
+    #[test]
+    fn edit_transport_refuses_an_unknown_format_before_the_capability_question() {
+        // D-24 beats the model sniff: a `gpt-image-1` model would otherwise be
+        // edit-capable, but an unrecognised declaration must fail first.
+        let cfg = EngineConfig {
+            model: Some("gpt-image-1".to_string()),
+            format: Some("bogus".to_string()),
+            ..dalle_config()
+        };
+        let err = edit_transport("typo_engine", &cfg).unwrap_err().to_string();
+        assert!(err.contains("typo_engine"), "{err}");
+        assert!(err.contains("bogus"), "{err}");
+        assert!(
+            !err.contains("cannot accept image input"),
+            "the capability gate is never reached: {err}"
+        );
+    }
+
+    #[test]
+    fn edit_transport_keeps_chat_vision_for_a_declared_openai_format() {
+        let cfg = EngineConfig {
+            base_url: Some("https://openrouter.ai/api/v1".to_string()),
+            model: Some("google/gemini-2.0-flash-image".to_string()),
+            format: Some("openai".to_string()),
+            ..dalle_config()
+        };
+        assert_eq!(
+            edit_transport("openrouter_vision", &cfg).unwrap(),
+            EditTransport::ChatVision
+        );
     }
 
     #[test]

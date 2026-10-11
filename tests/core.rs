@@ -57,6 +57,7 @@ async fn openrouter_chat_image_model_saves_png() {
                 api_key: "test".to_string(),
                 base_url: Some(openrouter_url),
                 model: Some("gemini-2.0-flash-image".to_string()),
+                format: None,
             },
         )]),
     };
@@ -121,6 +122,7 @@ async fn edit_via_openrouter_chat_sends_data_uri_parts() {
                 api_key: "test".to_string(),
                 base_url: Some(openrouter_url),
                 model: Some("gemini-2.0-flash-image".to_string()),
+                format: None,
             },
         )]),
     };
@@ -176,6 +178,7 @@ async fn generate_writes_history_sidecar() {
             api_key: "test".to_string(),
             base_url: Some(mock.base_url()),
             model: Some("dall-e-3".to_string()),
+            format: None,
         },
     );
 
@@ -239,6 +242,7 @@ async fn edit_writes_child_node_under_its_source() {
             api_key: "test".to_string(),
             base_url: Some(mock.base_url()),
             model: Some("gpt-image-1".to_string()),
+            format: None,
         },
     );
 
@@ -301,6 +305,7 @@ async fn out_of_dir_result_is_not_recorded() {
             api_key: "test".to_string(),
             base_url: Some(mock.base_url()),
             model: Some("dall-e-3".to_string()),
+            format: None,
         },
     );
 
@@ -344,6 +349,7 @@ async fn explicit_output_with_multiple_images() {
                 api_key: "test".to_string(),
                 base_url: Some(mock.base_url()),
                 model: Some("dall-e-3".to_string()),
+                format: None,
             },
         )]),
     };
@@ -386,6 +392,7 @@ async fn default_filename_with_multiple_images_does_not_collide() {
                 api_key: "test".to_string(),
                 base_url: Some(mock.base_url()),
                 model: Some("dall-e-3".to_string()),
+                format: None,
             },
         )]),
     };
@@ -427,4 +434,52 @@ fn list_png_files(dir: &std::path::Path) -> Vec<String> {
         .collect();
     files.sort();
     files
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn edit_against_fal_format_fails_before_any_request() {
+    // D-05/D-26/D-30: the capability gate must fire before a socket opens. The
+    // empty request set is the executable proof that nothing left the machine —
+    // a provider-side refusal would have left one request behind.
+    let mock = MockServer::start().await;
+    let out = TempDir::new().unwrap();
+    let out_path = out.path().to_path_buf();
+
+    let settings = Settings {
+        output_dir: out_path.clone(),
+        default_engine: Some("fal".to_string()),
+        engines: HashMap::from([(
+            "fal".to_string(),
+            EngineConfig {
+                api_key: "test".to_string(),
+                base_url: Some(mock.base_url()),
+                model: Some("fal-ai/flux/schnell".to_string()),
+                format: Some("fal".to_string()),
+            },
+        )]),
+    };
+
+    let request = ImageGenerationRequest {
+        prompt: "make it sunset".to_string(),
+        engine: "fal".to_string(),
+        // A real temp-dir path so the test does not depend on filesystem
+        // details; the gate must fire before this file is ever read.
+        source_image: Some(out_path.join("source.png").to_string_lossy().to_string()),
+        ..Default::default()
+    };
+
+    let results = generate_image_core(&request, &settings).await;
+    assert_eq!(results.len(), 1);
+    let err = results[0].error.as_deref().expect("error message");
+    assert!(err.contains("fal"), "{err}");
+    assert!(err.contains("cannot accept image input for edits"), "{err}");
+    assert!(
+        results[0].saved_path.is_none(),
+        "no phantom save accompanies the error"
+    );
+    assert!(
+        mock.requests().is_empty(),
+        "the mock recorded no request at all: {:?}",
+        mock.requests()
+    );
 }

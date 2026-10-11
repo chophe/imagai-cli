@@ -10,6 +10,9 @@ pub struct EngineConfig {
     pub api_key: String,
     pub base_url: Option<String>,
     pub model: Option<String>,
+    /// Declared wire format, from `IMAGAI__ENGINES__<NAME>__FORMAT`. `None`
+    /// means the engine keeps its existing OpenAI-compatible behaviour (D-28).
+    pub format: Option<String>,
 }
 
 impl EngineConfig {
@@ -36,6 +39,7 @@ impl Settings {
     /// - `IMAGAI__ENGINES__<NAME>__API_KEY`
     /// - `IMAGAI__ENGINES__<NAME>__BASE_URL`
     /// - `IMAGAI__ENGINES__<NAME>__MODEL`
+    /// - `IMAGAI__ENGINES__<NAME>__FORMAT`
     pub fn load() -> Self {
         let mut settings = Settings {
             output_dir: PathBuf::from("generated_images"),
@@ -64,16 +68,29 @@ impl Settings {
                         let entry =
                             settings
                                 .engines
-                                .entry(engine_name)
+                                .entry(engine_name.clone())
                                 .or_insert_with(|| EngineConfig {
                                     api_key: "dummy".to_string(),
                                     base_url: None,
                                     model: None,
+                                    format: None,
                                 });
                         match field.as_str() {
                             "api_key" => entry.api_key = value,
                             "base_url" => entry.base_url = Some(value),
                             "model" => entry.model = Some(value),
+                            // A diagnostic only. The hard failure is
+                            // `formats::resolve`'s, because a config mistake
+                            // must not spend a request (D-05, D-24).
+                            "format" => {
+                                if crate::formats::ProviderFormat::from_declared(&value).is_none() {
+                                    eprintln!(
+                                        "[warning] Engine '{engine_name}' declares an unknown FORMAT '{value}'; supported formats: {}. This engine fails on its first request.",
+                                        crate::formats::ProviderFormat::FORMAT_NAMES.join(", ")
+                                    );
+                                }
+                                entry.format = Some(value);
+                            }
                             _ => {}
                         }
                     }

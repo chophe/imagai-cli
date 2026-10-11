@@ -2069,6 +2069,7 @@ mod tests {
                     api_key: "test".to_string(),
                     base_url: None,
                     model: Some("gpt-image-1".to_string()),
+                    format: None,
                 },
             )]),
         }

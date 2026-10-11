@@ -26,6 +26,7 @@ fn test_settings(mock: &MockServer, out_dir: &Path) -> Settings {
                 api_key: "test-key".to_string(),
                 base_url: Some(mock.base_url()),
                 model: Some("dall-e-3".to_string()),
+                format: None,
             },
         )]),
     }
