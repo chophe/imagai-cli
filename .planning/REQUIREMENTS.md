@@ -22,7 +22,7 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### Providers
 
-- [ ] **PRVD-01**: User can configure named non-OpenAI-compatible provider adapters alongside existing engines, selected per request
+- [x] **PRVD-01**: User can configure named non-OpenAI-compatible provider adapters alongside existing engines, selected per request
 
 *(Already Validated in PROJECT.md — no new work, must not regress: text-to-image via CLI/TUI/web, multi-engine OpenAI-compatible transport, per-request engine selection, result persistence with PNG metadata.)*
 
@@ -73,7 +73,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | BRCH-02 | Phase 2 | Complete |
 | BRCH-03 | Phase 2 | Complete |
 | BRCH-04 | Phase 2 | Complete |
-| PRVD-01 | Phase 3 | Pending |
+| PRVD-01 | Phase 3 | Complete |
 | ROB-01 | Phase 4 | Pending |
 | DIST-01 | Phase 4 | Pending |
 

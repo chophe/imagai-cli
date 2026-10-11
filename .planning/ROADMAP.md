@@ -10,7 +10,7 @@ Brownfield extension of the existing modular monolith (shared core `src/core.rs`
 
 - [x] **Phase 1: Image Editing** - Edit an existing image (file path or past result, multi-reference) through the shared core on all three surfaces (completed 2026-10-09)
 - [x] **Phase 2: Branching & Iteration History** - Persist and expose the iteration lineage: history tree, fork, step-back, cross-surface parity (completed 2026-10-10)
-- [ ] **Phase 3: Multi-Vendor Providers** - Named non-OpenAI-compatible provider adapters alongside existing engines, selected per request
+- [x] **Phase 3: Multi-Vendor Providers** - Named non-OpenAI-compatible provider adapters alongside existing engines, selected per request
 - [ ] **Phase 4: Ship to Users** - Non-zero exit on failure plus single-binary install and provider setup docs
 
 ## Phase Details
@@ -95,17 +95,17 @@ Brownfield extension of the existing modular monolith (shared core `src/core.rs`
 **Plans**: 5 plans
 **Wave 1**
 
-- [ ] 03-01-PLAN.md — The declared format: the `FORMAT` env field, the `src/formats.rs` registry and its precedence rule, and the format-driven edit capability gate (D-24, D-26, D-28, D-29, D-30, D-05)
+- [x] 03-01-PLAN.md — The declared format: the `FORMAT` env field, the `src/formats.rs` registry and its precedence rule, and the format-driven edit capability gate (D-24, D-26, D-28, D-29, D-30, D-05)
 
 **Wave 2** *(blocked on Wave 1 completion; the three plans touch disjoint files and run in parallel)*
 
-- [ ] 03-02-PLAN.md — The one non-OpenAI adapter: `fal` request/response/error mapping onto the existing `ImageGenerationResponse`, plus the mock mode that proves the wire shape (D-25, D-27, D-31, D-35, D-36, D-37)
-- [ ] 03-03-PLAN.md — Discovery: the `list-engines` format column, the TUI Engines tab column, and the `FORMAT` entry in `.env.example` (D-32, D-34, D-38)
-- [ ] 03-04-PLAN.md — Web surface: the `format` field on `/api/engines` and the three SPA engine pickers rendering it (D-33, D-34)
+- [x] 03-02-PLAN.md — The one non-OpenAI adapter: `fal` request/response/error mapping onto the existing `ImageGenerationResponse`, plus the mock mode that proves the wire shape (D-25, D-27, D-31, D-35, D-36, D-37)
+- [x] 03-03-PLAN.md — Discovery: the `list-engines` format column, the TUI Engines tab column, and the `FORMAT` entry in `.env.example` (D-32, D-34, D-38)
+- [x] 03-04-PLAN.md — Web surface: the `format` field on `/api/engines` and the three SPA engine pickers rendering it (D-33, D-34)
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 03-05-PLAN.md — The regression and parity net: byte-identical bodies for every OpenAI-compatible engine, and one real fal generation per surface (success criteria 3 and 4)
+- [x] 03-05-PLAN.md — The regression and parity net: byte-identical bodies for every OpenAI-compatible engine, and one real fal generation per surface (success criteria 3 and 4)
 
 **Wave structure:** 03-01 (w1) → 03-02 ∥ 03-03 ∥ 03-04 (w2) → 03-05 (w3)
 `03-01` creates `src/formats.rs` and its public API (`ProviderFormat`, `resolve`, `format_label`, `supports_image_input`) plus the `format` field on `EngineConfig`, which every other plan consumes; each Wave-2 plan touches a disjoint file set (`src/provider.rs`+`src/models.rs`+`tests/common/mod.rs`+`tests/core.rs` / `src/cli.rs`+`src/tui.rs`+`tests/cli.rs`+`.env.example` / `src/web.rs`+`web_interface.html`+`tests/web.rs`), so they carry no implicit file-ownership dependency and run in parallel. `03-05` closes the phase's two absence claims — no regression (criterion 3) and three-surface reachability (criterion 4) — as executable key-set equality and per-surface request-count tests.
