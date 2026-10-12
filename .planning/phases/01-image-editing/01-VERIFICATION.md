@@ -1,6 +1,6 @@
 ---
 phase: 01-image-editing
-verified: 2026-10-10T21:47:02Z
+verified: 2026-10-12T12:06:19Z
 status: passed
 score: 22/22 must-haves verified
 covered_files:
@@ -29,27 +29,29 @@ covered_files:
   - tests/core.rs
   - tests/web.rs
   - web_interface.html
-covered_digest: "v3:sha256:72f289a1b221a622c2a89cbaa23978e8cd887f29dd354f38dfe2740496396673"
+covered_digest: "v3:sha256:554b73f824736b24878d8725fcf34e33997e39635820417faa05e4ec556e0570"
 behavior_unverified: 0
 overrides_applied: 0
 re_verification:
   previous_status: passed
   previous_score: 22/22
+  previous_digest: "v3:sha256:72f289a1b221a622c2a89cbaa23978e8cd887f29dd354f38dfe2740496396673"
   gaps_closed: []
   gaps_remaining: []
   regressions: []
+  reason: "Re-verification round: Phase 3 (multi-vendor providers) rewrote shared covered files (`src/cli.rs`, `src/models.rs`, `src/provider.rs`, `src/tui.rs`, `src/web.rs`, `tests/cli.rs`, `tests/core.rs`, `tests/web.rs`, `tests/common/mod.rs`) after the 2026-10-10 pass, so the stored digest no longer matched and the report read `stale`. The digest was regenerated through the fingerprint command and all 22 must-haves re-verified against the live code at HEAD `23ce426` — no regression."
 ---
 
 # Phase 01: Image Editing Verification Report
 
 **Phase Goal:** Users can edit an existing image by combining it with a new prompt and get the result back in the same flow
-**Verified:** 2026-10-10
+**Verified:** 2026-10-12
 **Status:** passed
-**Re-verification:** Yes — five covered source files (`src/cli.rs`, `tests/cli.rs`, `src/core.rs`, `src/web.rs`, `tests/web.rs`) changed after the 2026-10-09 report when Phase 2's security fixes landed (commits `56984f8`, `e24f937`, `f5cf9c2`, `f1ec03d`, `5264a55`, `9bb4a23`, `3ed1423`). The report was regenerated through the verifier's fingerprint command; no regression found.
+**Re-verification:** Yes — twice. First when Phase 2's security fixes landed (report at `72f289a`, 2026-10-10); now again because **Phase 3 (multi-vendor providers) rewrote nine shared covered files** after that pass (`src/cli.rs`, `src/models.rs`, `src/provider.rs`, `src/tui.rs`, `src/web.rs`, `tests/cli.rs`, `tests/core.rs`, `tests/web.rs`, `tests/common/mod.rs`), which flipped the stored digest and made this report `stale`. The digest was regenerated through the fingerprint command (now `v3:sha256:554b73f8…`) and every must-have re-verified against the live code at HEAD `23ce426`. No regression.
 
 ## Re-Verification Scope
 
-The Phase 2 change with any reach into this phase is `src/cli.rs` `resolve_from` (line 505): a resolved history node's filename is now reduced through `history::node_path` before the last join under `output_dir`, and a filename carrying a separator, an absolute path or no final component is refused instead of joined raw (T-02-01, T-02-05). `resolve_from` is shared by `fork` **and** `edit`, so every `imagai edit --from` resolution runs through the new guard. Phase 1's eight focus checks (explicit-path edit, auto-pick, multi-ref order, 16-cap, capability gate, `-edit` scheme, PNG lineage, web trust boundary) were re-run live against an in-process mock provider; all hold.
+Phase 3 generalized the provider layer (`provider::edit_transport` now resolves the declared `ProviderFormat` and bails a generation-only format — the new fal family — before the within-family model sniffing; `MAX_IMAGES` cap and the `image[]` wire order are unchanged) and carried the shared `src/cli.rs` `resolve_from` guard unchanged. Phase 1's eight focus checks were each re-confirmed this round: the explicit-path edit, the auto-pick of the newest `output_dir` image (printed), multi-reference `--ref` order, the 16-reference cap (both counts named, nothing sent), the capability gate (engine+model named before any socket), the `-edit` filename scheme with PNG lineage chunks, and the web `/api/edit` `is_plain_filename` trust boundary. Evidence: the named per-check integration tests (launching the compiled binary against the in-process mock) all pass, the lib PNG-lineage unit passes, and fresh **live binary runs against a standalone capture mock** reproduced the saved `src-edit.png` (wire = `model`/`prompt`/`image[]` only), the `Using most recent image` line, the `17 vs 16` refusal with zero provider posts, and the `source → ref-a → ref-b` wire order.
 
 ## Goal Achievement
 
@@ -138,7 +140,7 @@ Single full-suite run (Step 7b constraint honored — no per-truth filtered reru
 
 | Behavior | Command | Result | Status |
 |----------|---------|--------|--------|
-| Full test suite green | `cargo test` | lib 80 / cli 43 / core 8 / web 35 passed, 0 failed (166 total) | ✓ PASS |
+| Full test suite green | `cargo test` | lib 108 / cli 52 / core 26 / web 40 passed, 0 failed (226 total) | ✓ PASS |
 | Format clean | `cargo fmt --check` | exit 0 | ✓ PASS |
 | Lints clean | `cargo clippy --all-targets` | zero warning/error lines | ✓ PASS |
 | Edit e2e (explicit path) | built binary + mock: `edit --image src.png -p "make it sunset"` | `src-edit.png` saved, path printed, exit 0 | ✓ PASS |
@@ -199,9 +201,10 @@ Security review 01-SECURITY.md: 0 blocking threats open (3 high closed, 5 low ac
 
 ### Gaps Summary
 
-No gaps. All 22 must-haves verified against the codebase at three levels (exists, substantive, wired) plus Level-4 data-flow; all artifacts present and connected via the wired key links (including the Phase 2 `resolve_from` guard now on the shared edit path); all 3 phase requirement IDs satisfied; full suite green (166 tests: lib 80 / cli 43 / core 8 / web 35), fmt/clippy clean, zero anti-patterns, UAT 24/24, zero blocking security threats. No regression from the Phase 2 shared-file changes.
+No gaps. All 22 must-haves verified against the codebase at three levels (exists, substantive, wired) plus Level-4 data-flow; all artifacts present and connected via the wired key links (including the Phase 2 `resolve_from` guard and the Phase 3 `provider::edit_transport` format-resolution gate, both now on the shared edit path); all 3 phase requirement IDs satisfied; full suite green (226 tests: lib 108 / cli 52 / core 26 / web 40), fmt/clippy clean, zero anti-patterns, UAT 24/24, zero blocking security threats. No regression from the Phase 3 shared-file changes.
 
 ---
 
-_Verified: 2026-10-10T21:47:02Z_
+_Verified: 2026-10-12T12:06:19Z_
+_Evidence: cargo test 226 passed / 0 failed (lib 108 / cli 52 / core 26 / web 40); cargo fmt --check exit 0; cargo clippy --all-targets -D warnings exit 0; live CLI runs against a standalone capture mock; HEAD 23ce426_
 _Verifier: the agent (gsd-verifier)_

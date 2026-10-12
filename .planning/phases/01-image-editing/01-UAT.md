@@ -3,7 +3,7 @@ status: complete
 phase: 01-image-editing
 source: [01-00-SUMMARY.md, 01-01-SUMMARY.md, 01-02-SUMMARY.md, 01-03-SUMMARY.md, 01-04-SUMMARY.md]
 started: 2026-10-07T19:15:00+03:30
-updated: 2026-10-07T19:15:00+03:30
+updated: 2026-10-12T12:06:19Z
 ---
 
 ## Current Test
@@ -198,3 +198,31 @@ the 2026-10-09 verification (`src/cli.rs`, `tests/cli.rs`, `src/core.rs`, `src/w
 Result: 24/24 pass (22 automated + 2 walkthroughs). No regression from the shared-file changes.
 01-VERIFICATION.md regenerated through the fingerprint command the same session
 (digest `v3:sha256:72f289a1b221a622c2a89cbaa23978e8cd887f29dd354f38dfe2740496396673`, status `passed`).
+
+## Re-verification (2026-10-12, Phase 3 shared-file refresh)
+
+Phase 3 (multi-vendor providers) rewrote nine covered files after the 2026-10-10
+pass (`src/cli.rs`, `src/models.rs`, `src/provider.rs`, `src/tui.rs`, `src/web.rs`,
+`tests/cli.rs`, `tests/core.rs`, `tests/web.rs`, `tests/common/mod.rs`), so all 24
+checks were re-run against the live tree at HEAD `23ce426`.
+
+- Checks 1–22 (automated): **pass** — full suite green in a single `cargo test` run
+  (lib 108 / cli 52 / core 26 / web 40 = 226, 0 failed), `cargo fmt --check` clean,
+  `cargo clippy --all-targets -D warnings` exit 0, the named per-check integration
+  tests (compiled binary vs the in-process mock) all pass, and fresh live binary runs
+  against a standalone capture mock reproduced explicit-path edit (`src-edit.png`,
+  wire = `model`/`prompt`/`image[]` only), auto-pick (`Using most recent image`),
+  the 17-vs-16 over-limit refusal with zero provider posts, and the
+  `source → ref-a → ref-b` wire order.
+- Check 23 (browser edit flow): **pass (carried forward)** — interactive browser
+  re-run not performed by the verifier this round (no browser automation available);
+  its covering automated equivalents are green (`edit_form_is_served_with_source_and_ref_pickers`,
+  `edit_endpoint_*` incl. the traversal trust boundary and 16-cap), and Phase 3 did not
+  change the `/api/edit` trust boundary. User walkthrough stands from 2026-10-07.
+- Check 24 (TUI walkthrough): **pass (carried forward)** — the type→submit→saved-path
+  tail is covered by the 19 passing `tui::tests` (Edit tab, pickers, History tab),
+  which Phase 3's `src/tui.rs` changes kept green. User walkthrough stands from 2026-10-07.
+
+Result: 24/24 pass. 01-VERIFICATION.md regenerated through the fingerprint command
+(digest `v3:sha256:554b73f824736b24878d8725fcf34e33997e39635820417faa05e4ec556e0570`,
+status `passed`).
