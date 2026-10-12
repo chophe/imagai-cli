@@ -3,13 +3,13 @@ status: complete
 phase: 02-branching-iteration-history
 source: [02-01-SUMMARY.md, 02-02-SUMMARY.md, 02-03-SUMMARY.md, 02-04-SUMMARY.md, 02-VERIFICATION.md]
 started: 2026-10-10T03:20:00+03:30
-updated: 2026-10-10T03:52:20+03:30
-result: 23 passed, 1 failed
+updated: 2026-10-12T12:06:19Z
+result: 24 passed, 0 failed
 ---
 
 ## Current Test
 
-[testing complete — one blocker filed]
+[testing complete]
 
 ## Tests
 
@@ -74,11 +74,11 @@ result: pass
 source: automated
 evidence: live run 5 → `✅ Image 1 generated successfully! Saved to: …/a_red_cat_on_a_sofa_20261010_064913-edit.png`, exit 0; `fork_from_node_id_records_child` ok
 
-### 9. Second fork from the same source overwrites the first fork's image (02-02, D-14/D-15)
+### 9. Two forks from one source keep both images (02-02, D-14/D-15 — G-1 closed)
 expected: forking twice from one source leaves both images on disk under distinct names
-result: fail — blocker
+result: pass
 source: automated
-evidence: live run — two `imagai fork --from a4d0c62c` commands (same node id, prompts "make it a sunset" and "make it a forest") both saved to the identical path `a_red_cat_on_a_sofa_20261010_074855-edit.png`. One file on disk; the sidecar held three records, two naming that one filename. `imagai history` printed `🌳 Iteration history — /tmp/imagai_g1 (3 nodes)` and marked NEITHER sibling `✗ ` and emitted NO warning — the store is untruthful. Root cause `src/core.rs:85` plus the `else { base }` arm at `src/core.rs:88-89` (the `n > 1` disambiguation at line 87 never runs, because fork and edit always set `n = 1`). Recorded as **G-1** in 02-VERIFICATION.md; not fixed here. The original branch itself is intact and `fork_keeps_both_branches_visible` passes — the loss is between the two *siblings*. Only workaround today: explicit `-o`.
+evidence: G-1 was the original fail/blocker (`src/core.rs:85` + the unreachable `n>1` arm) and was closed by 02-05 (`5264a55` + `f5cf9c2`): `record_result` now probes `history::filename_taken` and bumps through `suffix_numbered`. Live run at `23ce426` — `fork --from source.png` then `fork --from <node-id>` → `source-edit.png` **and** `source-edit_1.png`, two files, two records, no overwrite, no `✗`, no warning; `two_forks_from_one_source_keep_both_images` and `fork_keeps_both_branches_visible` both pass.
 
 ### 10. Unknown / ambiguous / deleted / unreadable copy (02-02)
 expected: each of the four failure states prints its exact Copywriting Contract sentence and exits 1
@@ -179,20 +179,42 @@ evidence: `cargo test` — 76 lib + 39 cli + 8 core + 35 web = 158 passed, 0 fai
 | Metric | Value |
 |--------|-------|
 | Total checks | 24 |
-| Passed | 23 |
-| Failed | 1 (#9, G-1) |
+| Passed | 24 |
+| Failed | 0 |
 | Phase 1 regressions | 24/24 re-ran green (carried as #23 and #24) |
+
+## Re-verification (2026-10-12, Phase 3 shared-file refresh)
+
+Phase 3 (multi-vendor providers) rewrote shared covered files (`src/cli.rs`,
+`src/core.rs`, `src/tui.rs`, `src/web.rs`, `tests/*`) after this UAT's last pass,
+so all 24 checks were re-run against the live tree at HEAD `23ce426`.
+
+- Checks 1–12, 13–24 (automated): **pass** — full suite green in a single
+  `cargo test` run (lib 108 / cli 52 / core 26 / web 40 = 226, 0 failed),
+  `cargo fmt --check` clean, `cargo clippy --all-targets -D warnings` exit 0, the
+  named per-check integration tests (compiled binary vs the in-process mock) all
+  pass, and fresh live binary runs against a standalone loopback capture mock
+  reproduced: generate/edit/fork each recording a node with `parent` linkage;
+  two forks from one source → `source-edit.png` + `source-edit_1.png` (distinct,
+  G-1 holds); the ASCII history tree; the D-23 relative-filename sidecar; the
+  fal-format edit failing fast naming engine+model+format; and the
+  `../source.png` traversal record refused by `resolve_from`'s `node_path`
+  reduction with `is not a plain filename`.
+- Check #9 (G-1): **pass** — see above; closed on HEAD, re-confirmed live this round.
+- Phase 1 regressions (#23–#24): **pass** — Phase 1's edit/traversal/generate/gallery
+  checks present and green in the 226-test run; browser (#23) and interactive-TUI
+  (#24) walkthroughs carried forward, with their covering automated equivalents
+  (web edit-form/endpoint tests; 19 `tui::tests`) green this round.
+
+Result: **24/24 pass**. 02-VERIFICATION.md regenerated through the fingerprint
+command (digest `v3:sha256:98359b0a5544166fac5f053e205b1b289f76983f1cc4b4be66a90fdff9aa7ee0`,
+status `passed`).
 
 ## Blockers
 
-**#9 — Second fork from one source overwrites the first fork's image.**
-`src/core.rs:85` derives `{stem}-edit.{ext}` and the `else { base }` arm at
-`src/core.rs:88-89` is the only reachable one, because fork and edit always build
-`n = 1` and never pass `-o`. The `suffix_numbered` call at line 89 only fires for
-`n > 1`. Full evidence, live reproduction and the suggested fix route are in
-**02-VERIFICATION.md → Gaps Summary → G-1**.
-No source was modified; this needs a code-review-fix dispatch.
+None. G-1 (check #9) was closed by Phase 02-05 (`5264a55` + `f5cf9c2`) and
+re-confirmed green against HEAD `23ce426` this session. No source was modified.
 
 ---
 
-_Updated: 2026-10-10T03:52:20+03:30_
+_Updated: 2026-10-12T12:06:19Z_

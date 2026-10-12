@@ -1,10 +1,20 @@
 ---
 phase: 02-branching-iteration-history
-verified: 2026-10-10T16:11:36Z
+verified: 2026-10-12T12:06:19Z
 status: passed
 score: 24/24 must-haves verified
 covered_files:
   - .gitignore
+  - .planning/phases/02-branching-iteration-history/02-01-PLAN.md
+  - .planning/phases/02-branching-iteration-history/02-01-SUMMARY.md
+  - .planning/phases/02-branching-iteration-history/02-02-PLAN.md
+  - .planning/phases/02-branching-iteration-history/02-02-SUMMARY.md
+  - .planning/phases/02-branching-iteration-history/02-03-PLAN.md
+  - .planning/phases/02-branching-iteration-history/02-03-SUMMARY.md
+  - .planning/phases/02-branching-iteration-history/02-04-PLAN.md
+  - .planning/phases/02-branching-iteration-history/02-04-SUMMARY.md
+  - .planning/phases/02-branching-iteration-history/02-05-PLAN.md
+  - .planning/phases/02-branching-iteration-history/02-05-SUMMARY.md
   - Cargo.toml
   - src/cli.rs
   - src/core.rs
@@ -17,18 +27,19 @@ covered_files:
   - tests/core.rs
   - tests/web.rs
   - web_interface.html
-covered_digest: "v3:sha256:6a6f469bc0f6c29a37dd9bd8227d02eec963fc691a78edcd59052565fb35529d"
+covered_digest: "v3:sha256:98359b0a5544166fac5f053e205b1b289f76983f1cc4b4be66a90fdff9aa7ee0"
 behavior_unverified: 0
 overrides_applied: 0
-head: 411444199fd1d91479aea9a1a2030419276867c6
+head: 23ce4269f97370b02948c603b3f9ca4adb9b2c14
 re_verification:
   previous_status: passed
   previous_score: 24/24
-  previous_head: d92cd83c1d983a25145df7f14bb723eadc03ceba
+  previous_head: 411444199fd1d91479aea9a1a2030419276867c6
+  previous_digest: "v3:sha256:6a6f469bc0f6c29a37dd9bd8227d02eec963fc691a78edcd59052565fb35529d"
   gaps_closed: []
   gaps_remaining: []
   regressions: []
-  reason: "Re-verification round: the T-02-01/T-02-05/T-02-10 security fix (56984f8, src/cli.rs + tests/cli.rs) landed after the previous pass, making the report stale. The CLI fork/edit --from paths were re-verified live and the full suite re-run — no regression."
+  reason: "Re-verification round: Phase 3 (multi-vendor providers) rewrote shared covered files (`src/cli.rs`, `src/core.rs`, `src/tui.rs`, `src/web.rs`, `tests/*`) after the 4114441 pass, so the stored digest no longer matched and the report read `stale`. The digest was regenerated through the fingerprint command and all 24 must-haves re-verified against the live code at HEAD `23ce426` — no regression."
 ---
 
 # Phase 02: Branching & Iteration History — Verification Report
@@ -36,18 +47,18 @@ re_verification:
 **Phase Goal:** Users can view an image's iteration lineage and fork any past
 result into a new edit without losing the original, so they can branch instead
 of starting over.
-**Verified:** 2026-10-10
+**Verified:** 2026-10-12
 **Status:** passed
 **Re-verification:** Yes — after the G-1 gap closure (`5264a55` + `f5cf9c2`)
 
-**Re-verification:** Yes — twice. First after the G-1 gap closure (`5264a55` + `f5cf9c2`, report at `d92cd83`), then again after the T-02-01/T-02-05/T-02-10 security fix (`56984f8`) landed, which made the previous report stale: the fix touched covered files (`src/cli.rs`, `tests/cli.rs`) after the first re-verification pass. This round re-ran every check the change can affect against the live code at `4114441`.
+**Re-verification:** Yes — three times. First after the G-1 gap closure (`5264a55` + `f5cf9c2`, report at `d92cd83`); then again after the T-02-01/T-02-05/T-02-10 security fix (`56984f8`) landed (report at `4114441`); and now a third time because **Phase 3 (multi-vendor providers) rewrote shared covered files** (`src/cli.rs`, `src/core.rs`, `src/tui.rs`, `src/web.rs`, `tests/*`), which flipped the stored digest and made the `4114441` report `stale`. This round regenerated the digest through the fingerprint command (now `v3:sha256:98359b0a…`) and re-ran every check the change can affect against the live code at HEAD `23ce426`. No regression.
 
 Config used: `workflow.verifier = true`, `workflow.human_verify_mode =
 "end-of-phase"`, `workflow.nyquist_validation = false`. Verification ran against
-the LIVE code on `main` at `4114441`, not against plan text. The `d92cd83` report
+the LIVE code on `main` at `23ce426`, not against plan text. The `4114441` report
 (24/24) is superseded by this one only in frontmatter terms — its truth-by-truth
 evidence stands, and this round re-derived the digest and head and re-ran every
-check affected by the security fix.
+check affected by the Phase 3 shared-file changes.
 
 ## Goal Achievement
 
@@ -207,7 +218,7 @@ criterion's intent — no new rule — holds.
 
 | Behavior | Command | Result | Status |
 |----------|---------|--------|--------|
-| Full test suite | `cargo test` | `test result: ok. 80 passed` (lib) / `0 passed` (main) / `40 passed` (tests/cli.rs) / `8 passed` (tests/core.rs) / `35 passed` (tests/web.rs) / `0 doctests` — **163 passed, 0 failed** | ✓ PASS |
+| Full test suite | `cargo test` | `test result: ok. 108 passed` (lib) / `0 passed` (main) / `52 passed` (tests/cli.rs) / `26 passed` (tests/core.rs) / `40 passed` (tests/web.rs) / `0 doctests` — **226 passed, 0 failed** | ✓ PASS |
 | G-1 regression | `cargo test --test cli two_forks_from_one_source_keep_both_images` | `test result: ok. 1 passed` | ✓ PASS |
 | G-1 pin | `cargo test --test cli fork_keeps_both_branches_visible` | `test result: ok. 1 passed` (asserts exactly `cat-edit_1.png`, no escape) | ✓ PASS |
 | G-1 probe units | `cargo test --lib filename_taken` | `test result: ok. 4 passed` (free / on-disk / record-claim / unreadable) | ✓ PASS |
@@ -290,8 +301,8 @@ Verified end to end, not taken on the SUMMARY's word:
 - **Test** — `fork_keeps_both_branches_visible` now asserts exactly
   `cat-edit_1.png`; the permissive `|| cat-edit-1.png` escape is gone, so the
   collision cannot pass silently again.
-- **Suite** — 163 passed / 0 failed; `cargo fmt --check` exit 0;
-  `cargo clippy --all-targets` clean.
+- **Suite** — 226 passed / 0 failed; `cargo fmt --check` exit 0;
+  `cargo clippy --all-targets -D warnings` clean.
 
 ### WR-05 — accepted residual, unchanged and correctly recorded
 
@@ -335,8 +346,42 @@ input). Mock server and scratch dir are outside the repo and untracked.
 **Score unchanged:** 24/24 truths verified (0 behavior-unverified). The security
 fix closed T-02-01/T-02-05/T-02-10 without regressing any Phase 2 truth.
 
+### Phase-3 shared-file re-verification round (at `23ce426`)
+
+The `4114441` pass was verified at that HEAD; Phase 3 then rewrote shared covered
+files (`src/cli.rs`, `src/core.rs`, `src/tui.rs`, `src/web.rs`, `tests/*`), so the
+stored digest no longer matched and the report read `stale`. The digest was
+regenerated through `verification.fingerprint` (now `v3:sha256:98359b0a…`) and every
+check the change can affect re-run against the live code at HEAD `23ce426`. All
+evidence below was produced this round, not carried over.
+
+| Check | Result | Status |
+|-------|--------|--------|
+| Full suite | `cargo test` — lib 108 / main 0 / cli 52 / core 26 / web 40 = **226 passed, 0 failed** | ✓ PASS |
+| Format | `cargo fmt --check` — exit 0, no diff | ✓ PASS |
+| Lints | `cargo clippy --all-targets -D warnings` — exit 0 (zero warnings) | ✓ PASS |
+| History/fork key-links (named) | `fork_keeps_both_branches_visible`, `fork_from_node_id_records_child`, `fork_from_filename_of_adopted_file`, `fork_rejects_a_record_filename_that_escapes_output_dir`, `fork_refuses_a_record_filename_with_no_final_component`, `fork_rejects_more_than_sixteen_images`, `history_tree_prints_connectors`, `history_tree_marks_missing_nodes`, `history_empty_state` — 1 passed each | ✓ PASS |
+| Web trust boundary (named) | `fork_endpoint_returns_result_items`, `fork_endpoint_rejects_traversal_from`, `fork_endpoint_rejects_traversal_output`, `fork_endpoint_reduces_a_traversal_shaped_record_filename`, `history_endpoint_returns_nested_tree`, `history_endpoint_orders_roots_newest_first`, `history_endpoint_does_not_disclose_the_absolute_path` — 1 passed each | ✓ PASS |
+| Sidecar/history units | `cargo test --lib history::tests` — 30 passed, incl. `node_path_rejects_a_value_with_no_final_component`, `load_view_reduces_a_filename_that_carries_a_parent_component`, `resolve_fork_source_resolves_a_unique_id_prefix` | ✓ PASS |
+| TUI (shared file) | `cargo test --lib tui::tests` — 19 passed (History tab, pickers) | ✓ PASS |
+| Capability gate (D-26/D-30, shared) | `edit_against_fal_format_fails_before_any_request` — 1 passed | ✓ PASS |
+| Live truth #1/#2 | real binary + capture mock: `generate` then `edit` → sidecar with a root and a child (`parent` = root id); each records a node | ✓ PASS |
+| Live truths #9/#23/#24 (G-1) | `fork --from source.png` (filename) then `fork --from <node-id>` (id) → **`source-edit.png` and `source-edit_1.png`, two distinct files, two records, no overwrite, no `✗`, no warning**; tree renders both as children of the root | ✓ PASS |
+| Live truth #4 (D-23) | sidecar filenames `['source.png','source-edit.png','source-edit_1.png']`; `any(r.startswith('/'))` = False — relative only | ✓ PASS |
+| Live D-26/D-30 | `imagai edit --engine <fal-format> -p x` → exit 1, `Engine '…' (model 'fal-ai/flux/schnell') cannot accept image input for edits: the 'fal' format is generation-only…`, before any socket | ✓ PASS |
+| Live T-02-01 (resolve_from guard) | sidecar record `filename: "../source.png"` (file exists); `imagai edit --from <id>` → exit 1 with `'../source.png' is not a plain filename inside <output_dir>` — the `resolve_from` `node_path` reduction fires its own sentence | ✓ PASS |
+
+Live runs used the real `target/debug/imagai` binary against a standalone Python
+capture mock on loopback (`IMAGAI__OUTPUT_DIR` in a temp dir, engine `mock` /
+model `gpt-image-1`). Mock server and scratch dir lived outside the repo.
+
+**Score unchanged:** 24/24 truths verified (0 behavior-unverified). Phase 3's
+shared-file changes regressed no Phase 2 truth; the G-1 closure, the SPA history
+view, the `/api/fork` + `/api/history` endpoints, and the `resolve_from` guard all
+hold on HEAD.
+
 ---
 
-_Verified: 2026-10-10T16:11:36Z_
+_Verified: 2026-10-12T12:06:19Z_
 _Verifier: the agent (gsd-verifier)_
-_Evidence: cargo test 163 passed / 0 failed; cargo fmt --check exit 0; cargo clippy --all-targets clean; live CLI + web runs against a local mock OpenAI-compatible provider on 127.0.0.1:8731 (web on 127.0.0.1:8735); HEAD d92cd83_
+_Evidence: cargo test 226 passed / 0 failed (lib 108 / cli 52 / core 26 / web 40); cargo fmt --check exit 0; cargo clippy --all-targets -D warnings exit 0; live CLI runs against a standalone loopback capture mock; digest regenerated via verification.fingerprint; HEAD 23ce426_
