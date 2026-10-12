@@ -92,7 +92,7 @@ Brownfield extension of the existing modular monolith (shared core `src/core.rs`
   3. `imagai list-engines` shows the new provider, and existing OpenAI-compatible engines keep working unchanged (no regression)
   4. The new provider is selectable from all three surfaces (CLI flag, TUI, web engine picker)
 
-**Plans**: 5 plans
+**Plans**: 5/5 plans complete
 **Wave 1**
 
 - [x] 03-01-PLAN.md — The declared format: the `FORMAT` env field, the `src/formats.rs` registry and its precedence rule, and the format-driven edit capability gate (D-24, D-26, D-28, D-29, D-30, D-05)
@@ -148,5 +148,5 @@ Brownfield extension of the existing modular monolith (shared core `src/core.rs`
 |-------|----------------|--------|-----------|
 | 1. Image Editing | 5/5 | Complete    | 2026-10-09 |
 | 2. Branching & Iteration History | 5/5 | Complete    | 2026-10-10 |
-| 3. Multi-Vendor Providers | 0/2 (est.) | Not started | - |
+| 3. Multi-Vendor Providers | 5/5 | Complete    | 2026-10-12 |
 | 4. Ship to Users | 0/2 (est.) | Not started | - |
